@@ -1,0 +1,30 @@
+{
+  "appId": "com.shopErp.app",
+  "productName": "Shop ERP",
+  "asar": true,
+  "compression": "maximum",
+  "directories": {
+    "output": "release"
+  },
+  "files": [
+    "dist/**/*",
+    "main.cjs",
+    "preload.cjs"
+  ],
+  "win": {
+    "target": [
+      "nsis"
+    ],
+    "sign": null
+  },
+  "nsis": {
+    "oneClick": false,
+    "allowToChangeInstallationDirectory": true,
+    "createDesktopShortcut": true,
+    "createStartMenuShortcut": true,
+    "shortcutName": "Shop ERP",
+    "installerIcon": null,
+    "uninstallerIcon": null,
+    "installerHeaderIcon": null
+  }
+}
