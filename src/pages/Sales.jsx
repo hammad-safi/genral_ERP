@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { Search, Trash2, Printer, CheckCircle } from 'lucide-react';
 import { useReactToPrint } from 'react-to-print';
 import PageHeader from '@/components/PageHeader';
@@ -8,15 +8,19 @@ import { initDB, getDB } from '@/lib/db';
 import { formatCurrency, formatDate, removeLeadingZeros, forceRepaintAfterRender } from '@/lib/utils';
 import { useSettings } from '@/hooks/useSettings';
 import { useMultiSelect } from '@/hooks/useMultiSelect';
+import { useDebounce } from '@/hooks/useDebounce';
 import { useBusiness } from '@/contexts/BusinessContext';
+import { useDexiePagination } from '@/hooks/useDexiePagination';
+import VirtualTable from '@/components/VirtualTable';
+import { useLiveQuery } from 'dexie-react-hooks';
 
 const paymentMethods = ['Cash', 'Card', 'Other'];
 
 export default function Sales() {
   const { businessColor } = useBusiness();
-  const [products, setProducts] = useState([]);
+  const settings = useSettings();
+  const currency = settings?.currency ?? 'Rs';
   const [inventory, setInventory] = useState([]);
-  const [customers, setCustomers] = useState([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [cart, setCart] = useState([]);
   const [discount, setDiscount] = useState('');
@@ -30,80 +34,96 @@ export default function Sales() {
   const [receiptSale, setReceiptSale] = useState(null);
   const [receiptCustomer, setReceiptCustomer] = useState(null);
   const [receiptAmountPaid, setReceiptAmountPaid] = useState('');
-  const [confirmClear, setConfirmClear] = useState(false);
-  const [salesList, setSalesList] = useState([]);
   const [fromDate, setFromDate] = useState(() => new Date(new Date().setDate(new Date().getDate() - 30)).toISOString().substring(0, 10));
   const [toDate, setToDate] = useState(() => new Date().toISOString().substring(0, 10));
-  const { selectedIds: selectedSalesIds, isSelected: isSalesSelected, toggleOne: toggleSaleOne, toggleAll: toggleSalesAll, clearSelection: clearSalesSelection, isAllSelected: isAllSalesSelected, selectedCount: selectedSalesCount } = useMultiSelect(salesList);
-  const [viewSale, setViewSale] = useState(null);
-  const [returningSale, setReturningSale] = useState(null);
   const receiptRef = useRef(null);
   const salesReportRef = useRef(null);
   const barcodeRef = useRef(null);
   const [barcodeValue, setBarcodeValue] = useState('');
   const [scanFeedback, setScanFeedback] = useState(null);
-  const [isDeleting, setIsDeleting] = useState(false);
-  const [confirmBulkDelete, setConfirmBulkDelete] = useState(false);
-  const [confirmReturnSale, setConfirmReturnSale] = useState(false);
   const [confirmFreeSale, setConfirmFreeSale] = useState(false);
+  const [returningSale, setReturningSale] = useState(null);
+  const [confirmReturnSale, setConfirmReturnSale] = useState(false);
   const [returnSuccessMessage, setReturnSuccessMessage] = useState(null);
   const [returnAlreadyProcessedMessage, setReturnAlreadyProcessedMessage] = useState(null);
-  const settings = useSettings();
-  const currency = settings?.currency ?? 'Rs';
+  const [confirmBulkDelete, setConfirmBulkDelete] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [confirmClear, setConfirmClear] = useState(false);
+  const [viewSale, setViewSale] = useState(null);
+  
+  const queryBuilder = useCallback((db) => {
+    return db.sales.orderBy('date').reverse().filter((s) => {
+      const d = new Date(s.date);
+      const localDateStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      return localDateStr >= fromDate && localDateStr <= toDate;
+    });
+  }, [fromDate, toDate]);
 
-  useEffect(() => {
-    const load = async () => {
-      await initDB();
-      const currentDB = getDB();
-      const [productData, inventoryData, customerData, salesData] = await Promise.all([
-        currentDB.products.toArray(),
-        currentDB.inventory.toArray(),
-        currentDB.customers.toArray(),
-        currentDB.sales.toArray()
-      ]);
-      setProducts(productData);
-      setInventory(inventoryData);
-      setCustomers(customerData);
-      loadSalesList(salesData, customerData);
-    };
-    load();
+  const transformChunk = useCallback(async (chunk) => {
+    const currentDB = getDB();
+    const customerIds = [...new Set(chunk.map(s => s.customerId).filter(Boolean))];
+    const customers = await currentDB.customers.where('id').anyOf(customerIds).toArray();
+    const customerMap = new Map(customers.map(c => [c.id, c.name]));
+    
+    return chunk.map(sale => {
+      let customerName = 'Walk-in';
+      if (sale.customerId && customerMap.has(sale.customerId)) {
+        customerName = customerMap.get(sale.customerId);
+      }
+      return {
+        ...sale,
+        customerName: customerName,
+      };
+    });
   }, []);
 
-  const loadSalesList = async (salesData, customerData = []) => {
-    const filtered = salesData
-      .filter((s) => {
-        const d = new Date(s.date);
-        const localDateStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-        return localDateStr >= fromDate && localDateStr <= toDate;
-      })
-      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
-      .map((sale) => {
-        let customerName = 'Walk-in';
-        if (sale.customerId) {
-          customerName = customerData.find((c) => c.id === sale.customerId)?.name ?? 'Walk-in';
-        }
-        return {
-          ...sale,
-          customerName: customerName,
-        };
-      });
-    setSalesList(filtered);
-  };
+  const { data: visibleData, loadMoreRef, hasMore, refresh: refreshSales } = useDexiePagination(queryBuilder, [fromDate, toDate], 20, transformChunk, 'sales-history');
 
-  const searchResults = useMemo(() => {
-    const term = searchQuery.toLowerCase();
-    return products.filter((product) => product.name.toLowerCase().includes(term) || product.barcode.toLowerCase().includes(term));
-  }, [products, searchQuery]);
+  const { selectedIds: selectedSalesIds, isSelected: isSalesSelected, toggleOne: toggleSaleOne, toggleAll: toggleSalesAll, clearSelection: clearSalesSelection, isAllSelected: isAllSalesSelected, selectedCount: selectedSalesCount } = useMultiSelect(visibleData);
 
-  const customerResults = useMemo(() => {
-    if (!customerSearch || customerSearch.length < 1) return [];
-    const q = customerSearch.toLowerCase();
-    return customers.filter(c =>
-      c.name.toLowerCase().includes(q) ||
-      c.phone.toLowerCase().includes(q) ||
-      (c.email && c.email.toLowerCase().includes(q))
-    ).slice(0, 5);
-  }, [customerSearch, customers]);
+  const debouncedSearchQuery = useDebounce(searchQuery, 300);
+  const debouncedCustomerSearch = useDebounce(customerSearch, 300);
+
+  const searchResults = useLiveQuery(
+    async () => {
+      if (!debouncedSearchQuery) return [];
+      const term = debouncedSearchQuery.toLowerCase();
+      const currentDB = getDB();
+      return await currentDB.products
+        .where('name').startsWithIgnoreCase(term)
+        .or('barcode').startsWithIgnoreCase(term)
+        .limit(20)
+        .toArray();
+    },
+    [debouncedSearchQuery],
+    []
+  );
+
+  const customerResults = useLiveQuery(
+    async () => {
+      if (!debouncedCustomerSearch || debouncedCustomerSearch.length < 1) return [];
+      const term = debouncedCustomerSearch.toLowerCase();
+      const currentDB = getDB();
+      return await currentDB.customers
+        .where('name').startsWithIgnoreCase(term)
+        .or('phone').startsWithIgnoreCase(term)
+        .limit(10)
+        .toArray();
+    },
+    [debouncedCustomerSearch],
+    []
+  );
+
+  useEffect(() => {
+    const loadInitialData = async () => {
+      await initDB();
+      const currentDB = getDB();
+      // Only keep inventory for stock display check in dropdown
+      const inventoryData = await currentDB.inventory.toArray();
+      setInventory(inventoryData);
+    };
+    loadInitialData();
+  }, []);
 
   useEffect(() => {
     const loadBalance = async () => {
@@ -125,19 +145,6 @@ export default function Sales() {
     };
     loadBalance();
   }, [selectedCustomer?.id]);
-
-  // Auto-refresh sales list when date filters change
-  useEffect(() => {
-    const refreshSalesList = async () => {
-      const currentDB = getDB();
-      const [salesData, customerData] = await Promise.all([
-        currentDB.sales.toArray(),
-        currentDB.customers.toArray()
-      ]);
-      loadSalesList(salesData, customerData);
-    };
-    refreshSalesList();
-  }, [fromDate, toDate]);
 
   const addToCart = (product) => {
     const inventoryItem = inventory.find((item) => item.productId === product.id);
@@ -218,7 +225,6 @@ export default function Sales() {
   };
 
   const updateQty = (productId, qty) => {
-    // Allow empty string or any numeric value including decimals
     if (qty === '' || qty === null || qty === undefined) {
       setCart((current) =>
         current.map((item) =>
@@ -258,7 +264,6 @@ export default function Sales() {
 
   const handleConfirmFreeSale = async () => {
     setConfirmFreeSale(false);
-    // Call the core sale logic (bypassing the zero check)
     await completeSaleLogic();
   };
 
@@ -327,12 +332,7 @@ export default function Sales() {
     setDiscount('');
     setPaymentMethod('Cash');
 
-    // Refresh sales list
-    const [salesData, customerData] = await Promise.all([
-      currentDB.sales.toArray(),
-      currentDB.customers.toArray()
-    ]);
-    loadSalesList(salesData, customerData);
+    refreshSales();
   };
 
   const completeSale = async () => {
@@ -348,7 +348,6 @@ export default function Sales() {
       setReturnAlreadyProcessedMessage('This sale has already been returned.');
       return;
     }
-    // Set the sale to be returned and show confirmation dialog
     setReturningSale(sale);
     setConfirmReturnSale(true);
   };
@@ -417,14 +416,12 @@ export default function Sales() {
 
     await currentDB.sales.update(sale.id, { returned: true });
 
-    const [updatedInventory, updatedSales, customerData] = await Promise.all([
+    const [updatedInventory] = await Promise.all([
       currentDB.inventory.toArray(),
-      currentDB.sales.toArray(),
-      currentDB.customers.toArray()
     ]);
 
     setInventory(updatedInventory);
-    loadSalesList(updatedSales, customerData);
+    refreshSales();
 
     setViewSale(null);
     setReturningSale(null);
@@ -445,11 +442,9 @@ export default function Sales() {
     try {
       const currentDB = getDB();
       
-      // Restore inventory for each non-returned sale before deleting
       for (const saleId of selectedSalesIds) {
-        const sale = salesList.find((s) => s.id === saleId);
+        const sale = visibleData.find((s) => s.id === saleId);
         
-        // Only restore inventory if sale has not been returned
         if (sale && sale.returned !== true && sale.items && Array.isArray(sale.items)) {
           for (const item of sale.items) {
             if (item.productId && item.qty) {
@@ -465,7 +460,7 @@ export default function Sales() {
       
       // Bulk delete the sales
       await currentDB.sales.bulkDelete(selectedSalesIds);
-      setSalesList((prev) => prev.filter((s) => !selectedSalesIds.includes(s.id)));
+
       
       // Re-fetch inventory from DB and update local state
       const updatedInventory = await currentDB.inventory.toArray();
@@ -488,7 +483,7 @@ export default function Sales() {
   const printReceipt = async () => {
     if (window.electronAPI && window.electronAPI.printReceipt && receiptRef.current) {
       try {
-        const printerName = settings?.receiptPrinter;
+        const printerName = settings?.receiptPrinter || settings?.reportsPrinter;
         const result = await window.electronAPI.printReceipt(receiptRef.current.innerHTML, printerName);
         if (result.success) {
           setScanFeedback({ msg: '✓ Receipt sent to printer.', type: 'success' });
@@ -695,7 +690,7 @@ export default function Sales() {
                 <p className="text-xs text-slate-400 mt-1">Enter amount to deduct, not percentage</p>
               </div>
 
-              {/* Student/Customer Search */}
+              {/* Customer Search */}
                 <label className="text-sm font-medium text-gray-700">
                   Customer (optional)
                 </label>
@@ -881,76 +876,80 @@ export default function Sales() {
           </div>
         </div>
 
-        <div className="overflow-x-auto overflow-y-auto max-h-[58vh] rounded-xl border border-slate-200">
-          <table className="w-full border-collapse text-left text-sm">
-            <thead>
-              <tr className="border-b bg-gray-50 text-gray-600">
-                <th className="w-10 px-4 py-3">
-                  <input
-                    type="checkbox"
-                    checked={isAllSalesSelected}
-                    onChange={toggleSalesAll}
-                    className="w-4 h-4 rounded cursor-pointer"
-                  />
-                </th>
-                <th className="px-4 py-3">Date</th>
-                <th className="px-4 py-3">Items</th>
-                <th className="px-4 py-3">Customer</th>
-                <th className="px-4 py-3">Total</th>
-                <th className="px-4 py-3">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {salesList?.length === 0 ? (
-                <tr>
-                  <td colSpan={6} className="px-4 py-6 text-center text-gray-500">No sales found</td>
-                </tr>
-              ) : (
-                salesList?.map((sale) => (
-                  <tr key={sale.id} className={isSalesSelected(sale.id) ? 'bg-red-50' : 'border-b hover:bg-gray-50'}>
-                    <td className="px-4 py-3">
-                      <input
-                        type="checkbox"
-                        checked={isSalesSelected(sale.id)}
-                        onChange={() => toggleSaleOne(sale.id)}
-                        className="w-4 h-4 rounded cursor-pointer"
-                      />
-                    </td>
-                    <td className="py-3 px-4 text-sm">
-                      {new Date(sale.date).toLocaleDateString('en-PK', { day: 'numeric', month: 'short', year: 'numeric' })}
-                    </td>
-                    <td className="py-3 px-4 text-sm">
-                      {sale.items?.length ?? 0} item(s)
-                      <br />
-                      <span className="text-xs text-gray-400">
-                        {sale.items?.map((item) => item.productName).join(', ')}
-                      </span>
-                    </td>
-                    <td className="py-3 px-4 text-sm">{sale.customerName}</td>
-                    <td className="py-3 px-4 text-sm font-medium">{formatCurrency(sale.totalAmount, currency)}</td>
-                    <td className="py-3 px-4">
-                      <div className="flex gap-2">
-                        <button
-                          onClick={() => setViewSale(sale)}
-                          className="text-blue-600 text-xs border border-blue-200 px-2 py-1 rounded hover:bg-blue-50"
-                        >
-                          👁 View
-                        </button>
-                        <button
-                          onClick={() => returnSale(sale)}
-                          className={`text-sm rounded px-2 py-1 ${sale.returned ? 'bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed' : 'border border-red-200 text-red-600 hover:bg-red-50'}`}
-                          disabled={sale.returned}
-                        >
-                          ↩ Return
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
+        <VirtualTable
+          data={visibleData}
+          columns={[
+            {
+              header: (
+                <input
+                  type="checkbox"
+                  checked={isAllSalesSelected}
+                  onChange={toggleSalesAll}
+                  className="w-4 h-4 rounded cursor-pointer"
+                />
+              ),
+              className: "w-10",
+            },
+            { header: "Date" },
+            { header: "Items" },
+            { header: "Customer" },
+            { header: "Total" },
+            { header: "Actions" },
+          ]}
+          hasMore={hasMore}
+          loadMoreRef={loadMoreRef}
+          emptyState={
+            <div className="p-8 text-center text-gray-500">
+              No sales found
+            </div>
+          }
+          renderRow={(sale, virtualIndex, measureRef) => (
+            <tr
+              key={sale.id}
+              ref={measureRef}
+              data-index={virtualIndex}
+              className={isSalesSelected(sale.id) ? 'bg-red-50' : 'border-b hover:bg-gray-50'}
+            >
+              <td className="px-4 py-3">
+                <input
+                  type="checkbox"
+                  checked={isSalesSelected(sale.id)}
+                  onChange={() => toggleSaleOne(sale.id)}
+                  className="w-4 h-4 rounded cursor-pointer"
+                />
+              </td>
+              <td className="py-3 px-4 text-sm">
+                {new Date(sale.date).toLocaleDateString('en-PK', { day: 'numeric', month: 'short', year: 'numeric' })}
+              </td>
+              <td className="py-3 px-4 text-sm">
+                {sale.items?.length ?? 0} item(s)
+                <br />
+                <span className="text-xs text-gray-400">
+                  {sale.items?.map((item) => item.productName).join(', ')}
+                </span>
+              </td>
+              <td className="py-3 px-4 text-sm">{sale.customerName}</td>
+              <td className="py-3 px-4 text-sm font-medium">{formatCurrency(sale.totalAmount, currency)}</td>
+              <td className="py-3 px-4">
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => setViewSale(sale)}
+                    className="text-blue-600 text-xs border border-blue-200 px-2 py-1 rounded hover:bg-blue-50"
+                  >
+                    👁 View
+                  </button>
+                  <button
+                    onClick={() => returnSale(sale)}
+                    className={`text-sm rounded px-2 py-1 ${sale.returned ? 'bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed' : 'border border-red-200 text-red-600 hover:bg-red-50'}`}
+                    disabled={sale.returned}
+                  >
+                    ↩ Return
+                  </button>
+                </div>
+              </td>
+            </tr>
+          )}
+        />
       </section>
 
       {viewSale && (
@@ -1096,10 +1095,19 @@ export default function Sales() {
 
               {/* Header */}
               <div className="text-center mb-6">
-                <div className="mb-2 inline-flex items-center justify-center w-12 h-12 bg-slate-900 text-white rounded-xl font-bold text-xl">
-                  {settings?.shopName?.charAt(0) || 'S'}
-                </div>
-                <h1 className="text-xl font-extrabold uppercase tracking-tight">{settings?.shopName || 'Pharmacy Store'}</h1>
+                {settings?.logo ? (
+                  <img 
+                    src={settings.logo} 
+                    alt="Logo" 
+                    className="w-12 h-12 mx-auto object-contain mb-2 rounded-full" 
+                    style={{ width: '48px', height: '48px', maxWidth: '48px', maxHeight: '48px' }}
+                  />
+                ) : (
+                  <div className="mb-2 inline-flex items-center justify-center w-12 h-12 bg-slate-900 text-white rounded-xl font-bold text-xl">
+                    {settings?.shopName?.charAt(0) || 'S'}
+                  </div>
+                )}
+                <h1 className="text-xl font-extrabold uppercase tracking-tight">{settings?.shopName || 'Shop ERP'}</h1>
                 <p className="text-[11px] text-slate-500 mt-1 max-w-[200px] mx-auto leading-relaxed">
                   {settings?.address && <span>{settings.address}<br /></span>}
                   {settings?.phone && <span>Ph: {settings.phone}</span>}
@@ -1128,7 +1136,6 @@ export default function Sales() {
                 <div className="text-right">
                   <p className="text-slate-400 font-bold uppercase text-[9px] tracking-wider mb-0.5">Customer</p>
                   <p className="font-bold text-slate-800">{receiptCustomer?.name || 'Walk-in Customer'}</p>
-                  {receiptCustomer?.phone && <p className="text-slate-500 text-[10px]">{receiptCustomer.phone}</p>}
                 </div>
               </div>
 
@@ -1146,9 +1153,6 @@ export default function Sales() {
                       <p className="text-xs font-bold text-slate-900 mb-0.5">{item.productName}</p>
                       <div className="flex flex-col text-[10px] text-slate-500">
                         <span>{item.qty} × {formatCurrency(item.unitPrice, currency)}</span>
-                        {item.expiryDate && (
-                          <span className="text-red-500 font-medium">Exp: {new Date(item.expiryDate).toLocaleDateString()}</span>
-                        )}
                       </div>
                     </div>
                     <p className="text-xs font-bold text-slate-900">{formatCurrency(item.subtotal, currency)}</p>
@@ -1179,32 +1183,6 @@ export default function Sales() {
                   </span>
                 </div>
               </div>
-
-              {/* Customer Account Details (If applicable) */}
-              {receiptCustomer && (
-                <div className="bg-slate-50 rounded-xl p-3 space-y-1.5 text-[10px]">
-                  <p className="text-[9px] font-black uppercase text-slate-400 mb-1 tracking-widest">Account Summary</p>
-                  <div className="flex justify-between text-slate-600">
-                    <span>Previous Balance</span>
-                    <span>{formatCurrency(customerBalance?.balance ?? 0, currency)}</span>
-                  </div>
-                  <div className="flex justify-between text-slate-600">
-                    <span>Amount Paid Now</span>
-                    <span className="font-bold text-emerald-600">-{formatCurrency(receiptAmountPaid, currency)}</span>
-                  </div>
-                  {(() => {
-                    const newBalance = (customerBalance?.balance ?? 0) + receiptSale.totalAmount - receiptAmountPaid;
-                    return (
-                      <div className="flex justify-between font-bold pt-1 border-t border-slate-200 mt-1">
-                        <span>New Total Balance</span>
-                        <span className={newBalance > 0 ? 'text-red-600' : 'text-emerald-600'}>
-                          {formatCurrency(Math.abs(newBalance), currency)} {newBalance < 0 ? '(Credit)' : ''}
-                        </span>
-                      </div>
-                    );
-                  })()}
-                </div>
-              )}
 
               {/* Footer Note */}
               <div className="mt-8 text-center border-t border-slate-100 pt-6">
@@ -1277,7 +1255,7 @@ export default function Sales() {
       )}
 
       {/* Hidden Sales Report for Printing */}
-      <div ref={salesReportRef} style={{ display: 'none' }}>
+      <div ref={salesReportRef} className="print-source">
         <style dangerouslySetInnerHTML={{ __html:
           "@media print { " +
           "@page { size: A4 portrait; margin: 20mm; } " +
@@ -1313,24 +1291,27 @@ export default function Sales() {
               </tr>
             </thead>
             <tbody>
-              {salesList?.map((s) => (
-                <tr key={s.id}>
-                  <td>{new Date(s.date).toLocaleDateString()}</td>
-                  <td>{s.items?.length ?? 0} item(s)</td>
-                  <td>{s.customerName}</td>
-                  <td>{s.paymentMethod}</td>
-                  <td className="text-right">{formatCurrency(s.totalAmount, currency)}</td>
+              {visibleData?.map((s) => (
+                <tr key={s.id} style={{ borderBottom: '1px solid #ddd' }}>
+                  <td style={{ padding: '8px' }}>{formatDate(s.date)}</td>
+                  <td style={{ padding: '8px' }}>{s.customerName || 'Walk-in'}</td>
+                  <td style={{ padding: '8px' }}>{s.items?.reduce((sum, item) => sum + item.qty, 0)}</td>
+                  <td style={{ padding: '8px' }} className="text-right">{formatCurrency(s.totalAmount, currency)}</td>
+                  <td style={{ padding: '8px' }}>{s.paymentMethod}</td>
                 </tr>
               ))}
-              <tr className="summary-row">
-                <td colSpan="4" className="text-right">GRAND TOTAL</td>
-                <td className="text-right">{formatCurrency(salesList?.reduce((s, x) => s + x.totalAmount, 0) ?? 0, currency)}</td>
-              </tr>
             </tbody>
+            <tfoot>
+              <tr>
+                <td colSpan="3" style={{ padding: '8px', fontWeight: 'bold' }} className="text-right">Total:</td>
+                <td className="text-right">{formatCurrency(visibleData?.reduce((s, x) => s + x.totalAmount, 0) ?? 0, currency)}</td>
+                <td></td>
+              </tr>
+            </tfoot>
           </table>
-          <div style={{ marginTop: '20px', borderTop: '1px solid #ccc', paddingTop: '10px' }}>
-            <p style={{ fontSize: '12px', color: '#666' }}>Total Sales: {salesList?.length ?? 0} transactions</p>
-            <p style={{ fontSize: '12px', color: '#666' }}>Total Items Sold: {salesList?.reduce((acc, s) => acc + (s.items?.reduce((sum, item) => sum + item.qty, 0) || 0), 0) ?? 0}</p>
+          <div style={{ marginTop: '20px', display: 'flex', justifyContent: 'space-between' }}>
+            <p style={{ fontSize: '12px', color: '#666' }}>Total Sales: {visibleData?.length ?? 0} transactions</p>
+            <p style={{ fontSize: '12px', color: '#666' }}>Total Items Sold: {visibleData?.reduce((acc, s) => acc + (s.items?.reduce((sum, item) => sum + item.qty, 0) || 0), 0) ?? 0}</p>
           </div>
         </div>
       </div>

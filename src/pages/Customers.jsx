@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, useCallback } from 'react';
 import { Plus, Search, BookOpen, Edit, Trash2 } from 'lucide-react';
 import BulkDeleteBar from '@/components/BulkDeleteBar';
 import { useNavigate } from 'react-router-dom';
@@ -8,13 +8,17 @@ import ConfirmDialog from '@/components/ConfirmDialog';
 import { initDB, getDB } from '@/lib/db';
 import { formatCurrency, forceRepaintAfterRender, removeLeadingZeros } from '@/lib/utils';
 import { useSettings } from '@/hooks/useSettings';
+import { useDexiePagination } from '@/hooks/useDexiePagination';
+import { useDebounce } from '@/hooks/useDebounce';
+import VirtualTable from '@/components/VirtualTable';
 import { useBusiness } from '@/contexts/BusinessContext';
 
 export default function Customers() {
   const navigate = useNavigate();
   const { businessColor } = useBusiness();
-  const [customers, setCustomers] = useState([]);
+
   const [searchQuery, setSearchQuery] = useState('');
+  const debouncedSearchQuery = useDebounce(searchQuery, 300);
   const [addModalOpen, setAddModalOpen] = useState(false);
   const [editCustomer, setEditCustomer] = useState(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -26,17 +30,51 @@ export default function Customers() {
   const settings = useSettings();
   const currency = settings?.currency ?? 'Rs';
 
+  const [stats, setStats] = useState({ totalCustomers: 0, totalOwed: 0, totalPaid: 0 });
+
   useEffect(() => {
-    loadCustomers();
-  }, []);
+    const calcStats = async () => {
+      const currentDB = getDB();
+      const allLedgers = await currentDB.customerLedger.toArray();
+      let totalP = 0;
+      const balances = {};
+      
+      allLedgers.forEach(e => {
+        if (!balances[e.customerId]) balances[e.customerId] = 0;
+        if (e.type === 'charge' || e.type === 'purchase') balances[e.customerId] += e.amount;
+        if (e.type === 'payment') {
+          balances[e.customerId] -= e.amount;
+          totalP += e.amount;
+        }
+      });
+      
+      let tOwed = 0;
+      for (const bal of Object.values(balances)) {
+        if (bal > 0) tOwed += bal;
+      }
+      
+      const cCount = await currentDB.customers.count();
+      setStats({ totalCustomers: cCount, totalOwed: tOwed, totalPaid: totalP });
+    };
+    calcStats();
+  }, []); // Re-run when needed, or just on mount for now
 
-  const loadCustomers = async () => {
-    await initDB();
+  const queryBuilder = useCallback((db) => {
+    let query = db.customers;
+    
+    if (debouncedSearchQuery) {
+      return query
+        .where('name').startsWithIgnoreCase(debouncedSearchQuery)
+        .or('phone').startsWithIgnoreCase(debouncedSearchQuery);
+    }
+    
+    return query.reverse();
+  }, [debouncedSearchQuery]);
+
+  const transformChunk = useCallback(async (chunk) => {
     const currentDB = getDB();
-    const customersData = await currentDB.customers.toArray();
-
     const customersWithBalance = await Promise.all(
-      customersData.map(async (customer) => {
+      chunk.map(async (customer) => {
         const ledger = await currentDB.customerLedger.where('customerId').equals(customer.id).toArray();
         const totalCharged = ledger
           .filter(e => e.type === 'charge' || e.type === 'purchase')
@@ -51,28 +89,14 @@ export default function Customers() {
         };
       })
     );
+    return customersWithBalance;
+  }, []);
 
-    setCustomers(customersWithBalance);
-  };
+  const { data: visibleData, loadMoreRef, hasMore, totalCount, refresh: refreshCustomers } = useDexiePagination(queryBuilder, [debouncedSearchQuery], 20, transformChunk, 'customers');
 
-  const filteredCustomers = useMemo(() => {
-    let filtered = customers;
-
-    if (searchQuery) {
-      const query = searchQuery.toLowerCase();
-      filtered = filtered.filter(customer =>
-        customer.name.toLowerCase().includes(query) ||
-        customer.phone.toLowerCase().includes(query) ||
-        (customer.email && customer.email.toLowerCase().includes(query))
-      );
-    }
-
-    return filtered;
-  }, [customers, searchQuery]);
-
-  const totalCustomers = customers.length;
-  const totalOwed = customers.reduce((sum, c) => sum + Math.max(0, c.balance), 0);
-  const totalPaid = customers.reduce((sum, c) => sum + c.totalPaid, 0);
+  const totalCustomers = stats.totalCustomers;
+  const totalOwed = stats.totalOwed;
+  const totalPaid = stats.totalPaid;
 
   const getBalanceColor = (balance) => {
     if (balance === 0) return 'text-green-600';
@@ -89,7 +113,8 @@ export default function Customers() {
     const currentDB = getDB();
     await currentDB.customers.delete(selectedCustomer.id);
     await currentDB.customerLedger.where('customerId').equals(selectedCustomer.id).delete();
-    setCustomers((current) => current.filter((c) => c.id !== selectedCustomer.id));
+    
+    refreshCustomers();
     setConfirmDelete(false);
     setSelectedCustomer(null);
     forceRepaintAfterRender();
@@ -106,7 +131,7 @@ export default function Customers() {
       setSelectedIds([]);
       setSelectAll(false);
     } else {
-      setSelectedIds(filteredCustomers?.map(c => c.id) ?? []);
+      setSelectedIds(visibleData.map(c => c.id));
       setSelectAll(true);
     }
   };
@@ -123,7 +148,8 @@ export default function Customers() {
       const currentDB = getDB();
       await currentDB.customerLedger.where('customerId').anyOf(selectedIds).delete();
       await currentDB.customers.bulkDelete(selectedIds);
-      setCustomers(prev => prev.filter(c => !selectedIds.includes(c.id)));
+      
+      refreshCustomers();
       setSelectedIds([]);
       setSelectAll(false);
       forceRepaintAfterRender();
@@ -134,11 +160,11 @@ export default function Customers() {
     }
   };
 
-  // Update selectAll when filteredCustomers or selectedIds change
+  // Update selectAll when visibleData or selectedIds change
   useEffect(() => {
-    const allSelected = filteredCustomers.length > 0 && filteredCustomers.every(c => selectedIds.includes(c.id));
+    const allSelected = visibleData.length > 0 && visibleData.every(c => selectedIds.includes(c.id));
     setSelectAll(allSelected);
-  }, [filteredCustomers, selectedIds]);
+  }, [visibleData, selectedIds]);
 
   const handleSaveCustomer = async (formData, isEdit = false) => {
     const currentDB = getDB();
@@ -150,11 +176,7 @@ export default function Customers() {
         email: formData.email || '',
         address: formData.address || '',
       });
-      setCustomers((current) =>
-        current.map((c) =>
-          c.id === formData.id ? { ...c, ...formData } : c
-        )
-      );
+      refreshCustomers();
     } else {
       const customerId = await currentDB.customers.add({
         name: formData.name,
@@ -174,7 +196,7 @@ export default function Customers() {
         });
       }
       
-      await loadCustomers();
+      refreshCustomers();
     }
   };
 
@@ -226,87 +248,89 @@ export default function Customers() {
       </div>
 
       <div className="rounded-2xl border border-slate-200 bg-white shadow-sm">
-        <div className="overflow-x-auto overflow-y-auto max-h-[58vh] rounded-xl border border-slate-200">
-          <table className="w-full">
-            <thead className="bg-slate-50 border-b border-slate-200">
-              <tr>
-                <th className="w-10 px-4 py-3">
-                  <input
-                    type="checkbox"
-                    checked={selectAll}
-                    onChange={toggleSelectAll}
-                    className="w-4 h-4 rounded cursor-pointer"
-                  />
-                </th>
-                <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-600">Name</th>
-                <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-600">Phone</th>
-                <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-600">Email</th>
-                <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-600">Balance</th>
-                <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-600">Actions</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-200">
-              {filteredCustomers.map((customer) => (
-                <tr key={customer.id} className={selectedIds.includes(customer.id) ? 'bg-red-50 hover:bg-red-100 transition-colors' : 'hover:bg-slate-50 transition-colors'}>
-                  <td className="px-4 py-3">
-                    <input
-                      type="checkbox"
-                      checked={selectedIds.includes(customer.id)}
-                      onChange={() => toggleSelect(customer.id)}
-                      className="w-4 h-4 rounded cursor-pointer"
-                    />
-                  </td>
-                  <td className="px-4 py-3">
-                    <span className="text-sm font-semibold text-slate-900">{customer.name}</span>
-                  </td>
-                  <td className="px-4 py-3 text-sm text-slate-700">{customer.phone}</td>
-                  <td className="px-4 py-3 text-sm text-slate-700">{customer.email || '-'}</td>
-                  <td className={`px-4 py-3 text-sm font-bold ${getBalanceColor(customer.balance)}`}>
-                    {formatCurrency(customer.balance, currency)}
-                  </td>
-                  <td className="px-4 py-3">
-                    <div className="flex items-center gap-2">
-                      <button
-                        onClick={() => navigate(`/customers/${customer.id}`)}
-                        className="rounded-lg border border-blue-200 bg-blue-50 p-2 text-blue-600 hover:bg-blue-100 transition-colors"
-                        title="View Khata"
-                      >
-                        <BookOpen className="h-4 w-4" />
-                      </button>
-                      <button
-                        onClick={() => handleEditCustomer(customer)}
-                        className="rounded-lg border border-slate-200 bg-slate-50 p-2 text-slate-600 hover:bg-slate-100 transition-colors"
-                        title="Edit Customer"
-                      >
-                        <Edit className="h-4 w-4" />
-                      </button>
-                      {!selectedIds.includes(customer.id) ? (
-                        <button
-                          onClick={() => {
-                            setSelectedCustomer(customer);
-                            setConfirmDelete(true);
-                          }}
-                          className="rounded-lg border border-red-200 bg-red-50 p-2 text-red-600 hover:bg-red-100 transition-colors"
-                          title="Delete Customer"
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </button>
-                      ) : null}
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-        {filteredCustomers.length === 0 && (
-          <div className="flex flex-col items-center justify-center py-12 text-slate-500">
-            <svg className="h-12 w-12 text-slate-300 mb-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
-            </svg>
-            <p className="text-sm">No customers found</p>
-          </div>
-        )}
+        <VirtualTable
+          data={visibleData}
+          columns={[
+            {
+              header: (
+                <input
+                  type="checkbox"
+                  checked={selectAll}
+                  onChange={toggleSelectAll}
+                  className="w-4 h-4 rounded cursor-pointer"
+                />
+              ),
+              className: "w-10",
+            },
+            { header: "Name" },
+            { header: "Phone" },
+            { header: "Email" },
+            { header: "Balance" },
+            { header: "Actions" },
+          ]}
+          hasMore={hasMore}
+          loadMoreRef={loadMoreRef}
+          emptyState={
+            <div className="p-8 text-center text-slate-500">
+              No customers found matching "{searchQuery}"
+            </div>
+          }
+          renderRow={(customer, virtualIndex, measureRef) => (
+            <tr
+              key={customer.id}
+              ref={measureRef}
+              data-index={virtualIndex}
+              className={selectedIds.includes(customer.id) ? 'bg-red-50 hover:bg-red-100 transition-colors' : 'hover:bg-slate-50 transition-colors'}
+            >
+              <td className="px-4 py-3">
+                <input
+                  type="checkbox"
+                  checked={selectedIds.includes(customer.id)}
+                  onChange={() => toggleSelect(customer.id)}
+                  className="w-4 h-4 rounded cursor-pointer"
+                />
+              </td>
+              <td className="px-4 py-3">
+                <span className="text-sm font-semibold text-slate-900">{customer.name}</span>
+              </td>
+              <td className="px-4 py-3 text-sm text-slate-700">{customer.phone}</td>
+              <td className="px-4 py-3 text-sm text-slate-700">{customer.email || '-'}</td>
+              <td className={`px-4 py-3 text-sm font-bold ${getBalanceColor(customer.balance)}`}>
+                {formatCurrency(customer.balance, currency)}
+              </td>
+              <td className="px-4 py-3">
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => navigate(`/customers/${customer.id}`)}
+                    className="rounded-lg border border-blue-200 bg-blue-50 p-2 text-blue-600 hover:bg-blue-100 transition-colors"
+                    title="View Khata"
+                  >
+                    <BookOpen className="h-4 w-4" />
+                  </button>
+                  <button
+                    onClick={() => handleEditCustomer(customer)}
+                    className="rounded-lg border border-slate-200 bg-slate-50 p-2 text-slate-600 hover:bg-slate-100 transition-colors"
+                    title="Edit Customer"
+                  >
+                    <Edit className="h-4 w-4" />
+                  </button>
+                  {!selectedIds.includes(customer.id) ? (
+                    <button
+                      onClick={() => {
+                        setSelectedCustomer(customer);
+                        setConfirmDelete(true);
+                      }}
+                      className="rounded-lg border border-red-200 bg-red-50 p-2 text-red-600 hover:bg-red-100 transition-colors"
+                      title="Delete Customer"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </button>
+                  ) : null}
+                </div>
+              </td>
+            </tr>
+          )}
+        />
       </div>
 
       {(addModalOpen || editCustomer) && (

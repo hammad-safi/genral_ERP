@@ -4,10 +4,14 @@ import { initDB, getDB } from '@/lib/db';
 
 const getDefaultSettings = () => {
   return {
-    shopName: 'Pharmacy Store',
+    shopName: 'webzen Business',
     currency: 'Rs',
     address: '',
     phone: '',
+    logo: './default-logo.jpg',
+    receiptPrinter: '',
+    labelPrinter: '',
+    reportsPrinter: '',
   };
 };
 
@@ -23,6 +27,10 @@ const mapSettings = (rows) => {
     currency: map['currency'] ?? defaults.currency,
     address: map['address'] ?? defaults.address,
     phone: map['phone'] ?? defaults.phone,
+    logo: map['logo'] ?? defaults.logo,
+    receiptPrinter: map['receiptPrinter'] ?? defaults.receiptPrinter,
+    labelPrinter: map['labelPrinter'] ?? defaults.labelPrinter,
+    reportsPrinter: map['reportsPrinter'] ?? defaults.reportsPrinter,
   };
 };
 

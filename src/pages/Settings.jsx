@@ -17,18 +17,17 @@ export default function Settings() {
     phone: settings?.phone || '',
     receiptPrinter: settings?.receiptPrinter || '',
     labelPrinter: settings?.labelPrinter || '',
+    reportsPrinter: settings?.reportsPrinter || '',
+    logo: settings?.logo || '',
   });
   const [availablePrinters, setAvailablePrinters] = useState([]);
   const [saved, setSaved] = useState(false);
-  const [resetting, setResetting] = useState(false);
-  const [resetDone, setResetDone] = useState(false);
+  const [resetError, setResetError] = useState(null);
   const [exporting, setExporting] = useState(false);
   const [importing, setImporting] = useState(false);
   const [importMessage, setImportMessage] = useState(null);
-  const [confirmReset, setConfirmReset] = useState(false);
   const [confirmClear, setConfirmClear] = useState(false);
   const [confirmImportMismatch, setConfirmImportMismatch] = useState(null);
-  const [resetError, setResetError] = useState(null);
   const [exportError, setExportError] = useState(null);
 
   // Update form when settings load
@@ -41,6 +40,8 @@ export default function Settings() {
         phone: settings.phone || '',
         receiptPrinter: settings.receiptPrinter || '',
         labelPrinter: settings.labelPrinter || '',
+        reportsPrinter: settings.reportsPrinter || '',
+        logo: settings.logo || '',
       });
     }
   }, [settings]);
@@ -60,6 +61,17 @@ export default function Settings() {
     fetchPrinters();
   }, []);
 
+  const handleLogoUpload = (e) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        setForm((current) => ({ ...current, logo: reader.result }));
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
   const handleSave = async (e) => {
     e.preventDefault();
     const currentDB = getDB();
@@ -70,26 +82,23 @@ export default function Settings() {
     await currentDB.settings.put({ key: 'phone', value: form.phone });
     await currentDB.settings.put({ key: 'receiptPrinter', value: form.receiptPrinter });
     await currentDB.settings.put({ key: 'labelPrinter', value: form.labelPrinter });
+    await currentDB.settings.put({ key: 'reportsPrinter', value: form.reportsPrinter });
+    await currentDB.settings.put({ key: 'logo', value: form.logo });
     
     setSaved(true);
     setTimeout(() => setSaved(false), 3000);
   };
 
   const handleReset = async () => {
-    setConfirmReset(false);
-    setResetting(true);
+    setConfirmClear(false);
     try {
       await resetDatabase();
       await initDB();
-      setResetDone(true);
-      setTimeout(() => setResetDone(false), 5000);
       forceRepaintAfterRender();
     } catch (error) {
       console.error('Failed to reset database:', error);
       setResetError('Failed to reset database. Please try again.');
       setTimeout(() => setResetError(null), 3000);
-    } finally {
-      setResetting(false);
     }
   };
 
@@ -135,7 +144,8 @@ export default function Settings() {
       const url = URL.createObjectURL(dataBlob);
       const link = document.createElement('a');
       link.href = url;
-      link.download = `backup-pharmacy-${new Date().toISOString().substring(0, 10)}.json`;
+      const shopNameSlug = (settings?.shopName || 'webzen Business').replace(/\s+/g, '-');
+      link.download = `${shopNameSlug}-backup-${new Date().toISOString().substring(0, 10)}.json`;
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
@@ -229,31 +239,7 @@ export default function Settings() {
     }
   };
 
-  const handleClearAllData = async () => {
-    setConfirmClear(false);
-    try {
-      const currentDB = getDB();
-      await Promise.all([
-        currentDB.products.clear(),
-        currentDB.inventory.clear(),
-        currentDB.purchases.clear(),
-        currentDB.sales.clear(),
-        currentDB.suppliers.clear(),
-        currentDB.expenses.clear(),
-        currentDB.salesReturns.clear(),
-        currentDB.customers.clear(),
-        currentDB.customerLedger.clear(),
-        currentDB.settings.clear(),
-      ]);
-      setImportMessage({ type: 'success', text: 'All data cleared successfully!' });
-      forceRepaintAfterRender();
-      setTimeout(() => { window.location.reload(); }, 2000);
-    } catch (error) {
-      console.error('Clear failed:', error);
-      setImportMessage({ type: 'error', text: `Failed to clear data: ${error.message}` });
-      setTimeout(() => setImportMessage(null), 5000);
-    }
-  };
+
 
   return (
     <div className="space-y-6">
@@ -301,6 +287,31 @@ export default function Settings() {
                 />
               </label>
             </div>
+            
+            <div className="mt-6 flex items-start gap-6">
+              <div className="flex flex-col gap-2">
+                <span className="text-sm font-medium text-slate-700">Shop Logo</span>
+                <div className="flex items-center gap-4">
+                  {form.logo ? (
+                    <img src={form.logo} alt="Shop Logo" className="h-16 w-16 rounded-2xl object-cover border border-slate-200" />
+                  ) : (
+                    <div className="h-16 w-16 rounded-2xl bg-slate-100 flex items-center justify-center border border-slate-200 text-slate-400 text-2xl">
+                      🏪
+                    </div>
+                  )}
+                  <label className="cursor-pointer inline-flex items-center gap-2 rounded-xl bg-slate-50 px-4 py-2 text-sm font-semibold text-slate-700 border border-slate-200 hover:bg-slate-100 transition-colors">
+                    <Upload className="h-4 w-4" />
+                    Upload Logo
+                    <input type="file" accept="image/*" onChange={handleLogoUpload} className="hidden" />
+                  </label>
+                  {form.logo && (
+                    <button type="button" onClick={() => setForm(c => ({...c, logo: ''}))} className="text-sm text-red-600 hover:text-red-700">
+                      Remove
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
           </div>
 
           <div className="pt-6 border-t border-slate-100">
@@ -344,11 +355,20 @@ export default function Settings() {
               </label>
               
               <div className="space-y-2">
-                <span className="text-sm font-medium text-slate-700 block">Reports Printer</span>
-                <div className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-2.5 text-sm text-slate-500">
-                  System Default Dialog
-                </div>
-                <p className="text-xs text-slate-500">Uses standard A4 print dialog.</p>
+                <span className="text-sm font-medium text-slate-700 block">Default System Printer</span>
+                <select
+                  value={form.reportsPrinter}
+                  onChange={(e) => setForm((current) => ({ ...current, reportsPrinter: e.target.value }))}
+                  className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-2.5 text-sm text-slate-900 outline-none transition-colors focus:border-blue-500 focus:bg-white"
+                >
+                  <option value="">-- Generic Fallback Printer --</option>
+                  {availablePrinters.map((printer) => (
+                    <option key={printer.name} value={printer.name}>
+                      {printer.name} {printer.status !== 0 ? '(' + printer.status + ')' : ''}
+                    </option>
+                  ))}
+                </select>
+                <p className="text-xs text-slate-500">For full page A4 reports.</p>
               </div>
             </div>
           </div>
@@ -370,36 +390,6 @@ export default function Settings() {
             )}
           </div>
         </form>
-      </div>
-
-      <div className="rounded-2xl border border-red-200 bg-red-50 p-6 shadow-sm">
-        <div className="flex items-center gap-2 mb-4">
-          <svg className="h-5 w-5 text-red-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-          </svg>
-          <h3 className="text-base font-bold text-red-900">Danger Zone</h3>
-        </div>
-        <p className="text-sm text-red-700 mb-4">
-          Resetting will permanently delete ALL data (products, sales, purchases, inventory, customers, etc.) for the pharmacy. The database will be completely empty. This action cannot be undone.
-        </p>
-        <div className="flex items-center gap-4">
-          <button
-            onClick={() => setConfirmReset(true)}
-            disabled={resetting}
-            className="inline-flex items-center gap-2 rounded-xl bg-red-600 px-6 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            <RefreshCw className={`h-4 w-4 ${resetting ? 'animate-spin' : ''}`} />
-            {resetting ? 'Resetting...' : 'Reset Pharmacy Data'}
-          </button>
-          {resetDone && (
-            <span className="flex items-center gap-1 text-sm font-medium text-green-600">
-              <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-              </svg>
-              Database reset successfully! Refresh the page to see changes.
-            </span>
-          )}
-        </div>
       </div>
 
       <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
@@ -477,23 +467,15 @@ export default function Settings() {
       </div> */}
 
       <ConfirmDialog
-        open={confirmReset}
-        title="Reset all data?"
-        description="This will permanently delete ALL data for the pharmacy (products, sales, inventory, customers, etc.). The database will be completely empty. This action cannot be undone."
-        confirmText="Reset"
-        cancelText="Cancel"
-        onCancel={() => setConfirmReset(false)}
-        onConfirm={handleReset}
-      />
-
-      <ConfirmDialog
         open={confirmClear}
         title="Clear all data?"
-        description="This will permanently delete ALL data for this business. This action cannot be undone."
-        confirmText="Clear Everything"
+        description="This will permanently delete ALL data for the shop (products, sales, inventory, customers, etc.). The database will be completely empty. This action cannot be undone."
+        confirmText="Yes, Clear All Data"
         cancelText="Cancel"
+        requireAuthPhrase="CLEAR ALL DATA"
         onCancel={() => setConfirmClear(false)}
-        onConfirm={handleClearAllData}
+        onConfirm={handleReset}
+        isDestructive={true}
       />
 
       <ConfirmDialog

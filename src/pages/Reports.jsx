@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
+import { useLiveQuery } from 'dexie-react-hooks';
 import { Download, Printer } from 'lucide-react';
 import PageHeader from '@/components/PageHeader';
 import PrintWrapper from '@/components/PrintWrapper';
-import { initDB, getDB } from '@/lib/db';
-import { calculateNetProfit, downloadJson, formatCurrency } from '@/lib/utils';
+import { getDB } from '@/lib/db';
+import { downloadJson, formatCurrency } from '@/lib/utils';
 import { useSettings } from '@/hooks/useSettings';
 import { useBusiness } from '@/contexts/BusinessContext';
 
@@ -14,109 +15,87 @@ const getLocalDateString = (date) => {
   return `${y}-${m}-${d}`;
 };
 
+let globalReportsCache = new Map();
+
 export default function Reports() {
   const { businessColor } = useBusiness();
   const today = new Date();
   const thirtyDaysAgo = new Date(today);
   thirtyDaysAgo.setDate(today.getDate() - 30);
 
-  const [products, setProducts] = useState([]);
-  const [purchases, setPurchases] = useState([]);
-  const [sales, setSales] = useState([]);
-  const [expenses, setExpenses] = useState([]);
-  const [inventory, setInventory] = useState([]);
-  const [range, setRange] = useState({ from: getLocalDateString(thirtyDaysAgo), to: getLocalDateString(today) });
   const settings = useSettings();
   const currency = settings?.currency ?? 'Rs';
 
-  useEffect(() => {
-    const load = async () => {
-      await initDB();
+  const dbVersion = useLiveQuery(
+    async () => {
       const currentDB = getDB();
-      const [productsData, purchaseData, salesData, expenseData, inventoryData] = await Promise.all([
-        currentDB.products.toArray(),
-        currentDB.purchases.toArray(),
-        currentDB.sales.toArray(),
-        currentDB.expenses.toArray(),
-        currentDB.inventory.toArray(),
-      ]);
-      setProducts(productsData);
-      setPurchases(purchaseData);
-      setSales(salesData);
-      setExpenses(expenseData);
-      setInventory(inventoryData);
-    };
-    load();
-  }, []);
-
-  const { from, to } = useMemo(() => {
-    const [fromYear, fromMonth, fromDay] = range.from.split('-').map(Number);
-    const [toYear, toMonth, toDay] = range.to.split('-').map(Number);
-
-    const fromDate = new Date(fromYear, fromMonth - 1, fromDay, 0, 0, 0, 0);
-    const toDate = new Date(toYear, toMonth - 1, toDay, 23, 59, 59, 999);
-
-    return { from: fromDate, to: toDate };
-  }, [range]);
-
-  const filteredSales = useMemo(() => {
-    return sales.filter((sale) => {
-      const date = new Date(sale.date);
-      return date >= from && date <= to;
-    });
-  }, [from, to, sales]);
-
-  const activeFilteredSales = filteredSales.filter(s => s.returned !== true);
-
-  const filteredPurchases = useMemo(() => {
-    return purchases.filter((purchase) => {
-      const date = new Date(purchase.date);
-      return date >= from && date <= to;
-    });
-  }, [from, to, purchases]);
-
-  const filteredExpenses = useMemo(() => {
-    return expenses.filter((expense) => {
-      const date = new Date(expense.date);
-      return date >= from && date <= to;
-    });
-  }, [from, to, expenses]);
-
-  const totalSales = activeFilteredSales.reduce((acc, sale) => acc + sale.totalAmount, 0);
-  const totalPurchases = filteredPurchases.reduce((acc, purchase) => acc + purchase.totalCost, 0);
-  const totalExpenses = filteredExpenses.reduce((acc, expense) => acc + expense.amount, 0);
-  const netProfit = useMemo(
-    () => calculateNetProfit(activeFilteredSales, products, filteredExpenses),
-    [activeFilteredSales, products, filteredExpenses]
+      return (await currentDB.sales.count()) + (await currentDB.expenses.count()) + (await currentDB.purchases.count()) + (await currentDB.inventory.count());
+    },
+    []
   );
 
-  const bestSelling = useMemo(() => {
-    const counts = {}; // Use product ID as key instead of name
-    activeFilteredSales.forEach((sale) => {
-      sale.items.forEach((item) => {
-        const key = item.productId; // Use ID for consistency
-        counts[key] = (counts[key] || { name: item.productName, qty: 0 });
-        counts[key].qty += item.qty;
-      });
-    });
-    return Object.values(counts)
-      .sort((a, b) => b.qty - a.qty)
-      .slice(0, 5);
-  }, [activeFilteredSales]);
+  const [range, setRange] = useState({ from: getLocalDateString(thirtyDaysAgo), to: getLocalDateString(today) });
+  const cacheKey = JSON.stringify(range);
+  const [metrics, setMetrics] = useState(() => globalReportsCache.get(cacheKey) || null);
+  const [loadingError, setLoadingError] = useState(null);
 
-  const inventoryValue = useMemo(() => {
-    return inventory.reduce((acc, item) => {
-      const product = products.find((product) => product.id === item.productId);
-      return acc + (product?.costPrice || 0) * item.quantity;
-    }, 0);
-  }, [inventory, products]);
+  useEffect(() => {
+    setMetrics(globalReportsCache.get(cacheKey) || null);
+  }, [cacheKey]);
+
+  useEffect(() => {
+    if (dbVersion === undefined) return;
+
+    const worker = new Worker(new URL('../workers/metricsWorker.js', import.meta.url), { type: 'module' });
+
+    worker.onmessage = (e) => {
+      if (e.data.type === 'REPORT_METRICS_RESULT') {
+        globalReportsCache.set(cacheKey, e.data.payload);
+        setMetrics(e.data.payload);
+      } else if (e.data.type === 'ERROR') {
+        setLoadingError(e.data.payload);
+      }
+    };
+
+    worker.postMessage({ type: 'REPORT_METRICS', payload: { range } });
+
+    return () => {
+      worker.terminate();
+    };
+  }, [dbVersion, range]);
+
+  if (loadingError) {
+    return <div style={{ padding: 32, color: 'red', textAlign: 'center' }}>Error loading reports: {loadingError}</div>;
+  }
+  if (!metrics) {
+    return <div style={{ padding: 32, textAlign: 'center' }}>Crunching report metrics...</div>;
+  }
+
+  const {
+    totalSalesAmount: totalSales = 0,
+    totalPurchasesAmount: totalPurchases = 0,
+    totalExpensesAmount: totalExpenses = 0,
+    netProfitAmount: netProfit = 0,
+    totalInventoryValue: inventoryValue = 0,
+    bestSelling = [],
+    totalItemsSold = 0,
+    filteredSales = [],
+    filteredPurchases = [],
+    filteredExpenses = []
+  } = metrics;
+
+  const activeFilteredSales = filteredSales.filter(s => s.returned !== true);
 
   const handleExport = () => {
     downloadJson({ sales: filteredSales, purchases: filteredPurchases, expenses: filteredExpenses }, `reports-${range.from}-to-${range.to}.json`);
   };
 
-  const handlePrint = () => {
-    window.print();
+  const handlePrint = async () => {
+    if (window.electronAPI && window.electronAPI.printCurrentPage) {
+      await window.electronAPI.printCurrentPage(settings?.reportsPrinter || '');
+    } else {
+      window.print();
+    }
   };
 
   return (
@@ -213,7 +192,7 @@ export default function Reports() {
               </div>
               <div className="rounded-3xl bg-white p-4 shadow-sm">
                 <p className="text-sm text-slate-500">Items sold</p>
-                <p className="mt-2 text-xl font-semibold text-slate-900">{activeFilteredSales.reduce((acc, sale) => acc + (sale.items?.reduce((sum, item) => sum + item.qty, 0) || 0), 0)}</p>
+                <p className="mt-2 text-xl font-semibold text-slate-900">{totalItemsSold}</p>
               </div>
               <div className="rounded-3xl bg-white p-4 shadow-sm">
                 <p className="text-sm text-slate-500">Best selling</p>
@@ -250,6 +229,10 @@ export default function Reports() {
         {/* Print View */}
         <div className="print-only">
           <div className="report-header">
+            {settings?.logo && (
+              <img src={settings.logo} alt="Shop Logo" style={{ maxHeight: '60px', marginBottom: '10px' }} />
+            )}
+            <h2 style={{ margin: '0 0 10px 0', fontSize: '24px' }}>{settings?.shopName || 'Pharmacy Store'}</h2>
             <p><strong>Report Period:</strong> {range.from} to {range.to}</p>
             <p><strong>Printed on:</strong> {new Date().toLocaleString()}</p>
           </div>

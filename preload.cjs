@@ -12,8 +12,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.once('print-receipt-result', (event, result) => resolve(result));
     ipcRenderer.send('print-receipt', { htmlContent, printerName });
   }),
-  printQrLabel: (htmlContent, printerName) => new Promise((resolve) => {
+  printQrLabel: (htmlContent, printerName, quantity = 1) => new Promise((resolve) => {
     ipcRenderer.once('print-qr-result', (event, result) => resolve(result));
-    ipcRenderer.send('print-qr-label', { htmlContent, printerName });
+    ipcRenderer.send('print-qr-label', { htmlContent, printerName, quantity });
   }),
+  updateWindowTitle: (title) => ipcRenderer.send('update-window-title', title),
+  printCurrentPage: (printerName) => new Promise((resolve) => {
+    ipcRenderer.once('print-current-page-result', (event, result) => resolve(result));
+    ipcRenderer.send('print-current-page', { printerName });
+  }),
+  getSystemId: () => ipcRenderer.invoke('get-system-id'),
+  checkLicense: () => ipcRenderer.invoke('check-license'),
+  activateLicense: (key) => ipcRenderer.invoke('activate-license', key)
 });

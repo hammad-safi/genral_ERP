@@ -21,9 +21,13 @@ export default function PrintWrapper({ title, printLabel, children }) {
         </div>
         <button
           type="button"
-          onClick={() => {
-            setShowPreview(true);
-            setTimeout(() => handlePrint(), 100);
+          onClick={async () => {
+            if (window.electronAPI && window.electronAPI.printCurrentPage && settings?.reportsPrinter) {
+              await window.electronAPI.printCurrentPage(settings.reportsPrinter);
+            } else {
+              setShowPreview(true);
+              setTimeout(() => handlePrint(), 100);
+            }
           }}
           className="rounded-2xl bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700"
         >
@@ -31,7 +35,7 @@ export default function PrintWrapper({ title, printLabel, children }) {
         </button>
       </div>
       <div ref={printRef} className="rounded-3xl border border-slate-200 bg-white p-4 shadow-panel">
-        <div className="space-y-3 text-center border-b border-slate-200 pb-4 mb-4">
+        <div className="hidden print:block space-y-3 text-center border-b border-slate-200 pb-4 mb-4">
           <div>
             <p className="text-lg font-semibold text-slate-900">{settings?.shopName || 'Offline Shop ERP'}</p>
             {settings?.address && (

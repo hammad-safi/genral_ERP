@@ -224,7 +224,7 @@ export default function CustomerDetail() {
       )}
 
       {/* Hidden Printable Content */}
-      <div ref={printRef} style={{ display: 'none' }} className="p-8">
+      <div ref={printRef} className="print-source p-8">
         <div className="text-center border-b-2 border-black pb-4 mb-4">
           <p className="text-2xl font-bold">Pharmacy Store ERP</p>
           <p className="text-lg">Customer Account Statement</p>

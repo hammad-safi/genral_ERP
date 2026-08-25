@@ -1,3 +1,5 @@
+import { useState } from 'react';
+
 export default function ConfirmDialog({
   open,
   title,
@@ -7,10 +9,14 @@ export default function ConfirmDialog({
   onCancel,
   onConfirm,
   variant = 'danger',
+  requireAuthPhrase,
 }) {
+  const [authPhrase, setAuthPhrase] = useState('');
+
   if (!open) return null;
 
   const isDanger = variant === 'danger';
+  const isConfirmDisabled = requireAuthPhrase && authPhrase !== requireAuthPhrase;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 px-4 py-6 backdrop-blur-sm">
@@ -30,20 +36,41 @@ export default function ConfirmDialog({
           <div className="flex-1">
             <h3 className="text-lg font-bold text-slate-900">{title}</h3>
             <p className="mt-2 text-sm text-slate-600">{description}</p>
+            {requireAuthPhrase && (
+              <div className="mt-4">
+                <label className="text-sm font-medium text-slate-800 block mb-1">
+                  Type <strong>{requireAuthPhrase}</strong> to confirm:
+                </label>
+                <input
+                  type="text"
+                  value={authPhrase}
+                  onChange={(e) => setAuthPhrase(e.target.value)}
+                  placeholder={requireAuthPhrase}
+                  className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm outline-none focus:border-red-500"
+                />
+              </div>
+            )}
           </div>
         </div>
         <div className="mt-6 flex gap-3">
           <button
             type="button"
-            onClick={onCancel}
+            onClick={() => {
+              setAuthPhrase('');
+              onCancel();
+            }}
             className="inline-flex flex-1 justify-center rounded-xl border border-slate-200 bg-slate-50 px-4 py-2.5 text-sm font-semibold text-slate-900 transition-colors hover:bg-slate-100"
           >
             {cancelText}
           </button>
           <button
             type="button"
-            onClick={onConfirm}
-            className={`inline-flex flex-1 justify-center rounded-xl px-4 py-2.5 text-sm font-semibold text-white transition-colors ${
+            disabled={isConfirmDisabled}
+            onClick={() => {
+              setAuthPhrase('');
+              onConfirm();
+            }}
+            className={`inline-flex flex-1 justify-center rounded-xl px-4 py-2.5 text-sm font-semibold text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
               isDanger
                 ? 'bg-red-600 hover:bg-red-700'
                 : 'bg-blue-600 hover:bg-blue-700'

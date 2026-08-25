@@ -74,9 +74,25 @@ button:focus {
 }
 
 /* Print styles */
+@media screen {
+  .print-source {
+    position: absolute;
+    top: 0;
+    left: -10000px;
+    width: 100%;
+  }
+}
+
 @media print {
   body {
     background: white;
+  }
+
+  .print-source {
+    display: block !important;
+    position: static !important;
+    left: auto !important;
+    width: auto !important;
   }
   
   .no-print {

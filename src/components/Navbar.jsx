@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { useSettings } from '@/hooks/useSettings';
 import { useBusiness, businessConfig } from '@/contexts/BusinessContext';
@@ -52,8 +52,15 @@ export default function Navbar() {
   const settings = useSettings();
   const { businessColor } = useBusiness();
   const [drawerOpen, setDrawerOpen] = useState(false);
-  const shopName = settings?.shopName ?? 'Pharmacy Store';
+  const shopName = settings?.shopName ?? 'General Store';
   const currentConfig = businessConfig.pharmacy;
+
+  useEffect(() => {
+    document.title = shopName;
+    if (window.electronAPI && window.electronAPI.updateWindowTitle) {
+      window.electronAPI.updateWindowTitle(shopName);
+    }
+  }, [shopName]);
 
   return (
     <>
@@ -70,11 +77,14 @@ export default function Navbar() {
 
         {/* Logo and Shop Name */}
         <div className="mb-6 flex items-center gap-3 px-2">
-          <div className="h-16 w-16 rounded-2xl bg-emerald-100 flex items-center justify-center text-3xl shadow-sm">
-            💊
-          </div>
+          {settings?.logo ? (
+            <img src={settings.logo} alt="Logo" className="h-16 w-16 rounded-2xl object-cover shadow-sm" />
+          ) : (
+            <div className="h-16 w-16 rounded-2xl bg-emerald-100 flex items-center justify-center text-3xl shadow-sm">
+              🏪
+            </div>
+          )}
           <div>
-            <p className="text-sm uppercase tracking-[0.24em] text-slate-600">Pharmacy ERP</p>
             <h1 className="text-xl font-semibold text-slate-900">{shopName}</h1>
           </div>
         </div>
@@ -101,11 +111,6 @@ export default function Navbar() {
           })}
         </div>
 
-        {/* Footer Info */}
-        <div className={`mt-auto rounded-2xl border-2 ${currentConfig.borderColor} ${currentConfig.lightBgColor} p-4 text-sm ${currentConfig.lightTextColor}`}>
-          <p className="font-medium">{currentConfig.name}</p>
-          <p className="text-slate-500 text-xs mt-1">Fully offline ERP system</p>
-        </div>
       </nav>
 
       {/* Mobile Drawer */}
@@ -115,13 +120,18 @@ export default function Navbar() {
           <div className="absolute left-0 top-0 h-full w-72 overflow-y-auto bg-white shadow-2xl transition-transform duration-300">
             <div className="flex items-center justify-between border-b border-slate-200 px-4 py-4">
               <div className="flex items-center gap-3">
-                <img 
-                  src={settings?.logo || DEFAULT_LOGO} 
-                  alt="Shop Logo" 
-                  className="h-12 w-12 rounded-xl object-cover shadow-sm"
-                />
+                {settings?.logo ? (
+                  <img 
+                    src={settings.logo} 
+                    alt="Shop Logo" 
+                    className="h-12 w-12 rounded-xl object-cover shadow-sm"
+                  />
+                ) : (
+                  <div className="h-12 w-12 rounded-xl bg-slate-100 flex items-center justify-center text-2xl shadow-sm">
+                    🏪
+                  </div>
+                )}
                 <div>
-                  <p className="text-xs uppercase tracking-[0.2em] text-slate-600">Offline Shop</p>
                   <h1 className="text-base font-semibold text-slate-900">{shopName}</h1>
                 </div>
               </div>

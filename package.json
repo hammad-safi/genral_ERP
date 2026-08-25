@@ -12,12 +12,16 @@
     "preview": "vite preview",
     "electron": "npm run build && npx electron .",
     "electron:dev": "concurrently \"vite\" \"wait-on http://localhost:5173 && electron . --dev\"",
-    "dist": "npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false CSC_KEY_PASSWORD= electron-builder --win nsis --x64",    "build-portable": "npm run build && node build-portable.js",    "electron:start": "electron ."
+    "dist": "npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false CSC_KEY_PASSWORD= electron-builder --win nsis --x64",
+    "build-portable": "npm run build && node build-portable.js",
+    "electron:start": "electron ."
   },
   "dependencies": {
+    "@tanstack/react-virtual": "^3.14.10",
     "dexie": "^3.2.4",
     "dexie-react-hooks": "^1.1.7",
     "lucide-react": "^0.294.0",
+    "node-machine-id": "^1.1.12",
     "qrcode.react": "^4.2.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
@@ -60,17 +64,15 @@
       "legalTrademarks": "Muhammad Software Solutions",
       "certificateFile": null,
       "certificatePassword": null,
-      "forceCodeSigning": false
+      "forceCodeSigning": false,
+      "icon": "build/icon.png"
     },
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "Shop ERP",
-      "installerIcon": null,
-      "uninstallerIcon": null,
-      "installerHeaderIcon": null
+      "shortcutName": "Shop ERP"
     }
   }
 }

@@ -1,5 +1,5 @@
 import { Cell, Line, LineChart, Bar, BarChart, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis, Legend } from 'recharts';
-import { formatCurrency } from '@/lib/utils';
+import { formatCurrency, formatDate } from '@/lib/utils';
 
 const CustomTooltip = ({ active, payload, label, currency }) => {
   if (active && payload && payload.length) {
@@ -13,7 +13,7 @@ const CustomTooltip = ({ active, payload, label, currency }) => {
   return null;
 };
 
-export default function DashboardCharts({ lineData, barData, pieData, currency }) {
+export default function DashboardCharts({ lineData, barData, pieData, recentTransactions = [], currency }) {
   
   // Color scheme
   const colors = {
@@ -137,6 +137,30 @@ export default function DashboardCharts({ lineData, barData, pieData, currency }
               </ResponsiveContainer>
             ) : (
               <div className="flex h-full items-center justify-center text-slate-500">No sales category data available yet.</div>
+            )}
+          </div>
+        </section>
+
+        <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-panel">
+          <div className="mb-4 flex items-center justify-between">
+            <h3 className="text-lg font-semibold text-slate-900">Recent Transactions</h3>
+          </div>
+          <div className="space-y-3">
+            {recentTransactions.length === 0 ? (
+              <p className="text-sm text-slate-500">No recent activity yet.</p>
+            ) : (
+              recentTransactions.map((txn, index) => (
+                <div key={`${txn.type}-${index}`} className="rounded-3xl border border-slate-200 bg-slate-50 p-4">
+                  <div className="flex items-start justify-between mb-3">
+                    <p className="font-semibold text-slate-900">{txn.type}</p>
+                    <p className="text-sm text-slate-500">{formatDate(txn.date)}</p>
+                  </div>
+                  <div className="mt-2 flex items-center justify-between gap-3 text-sm text-slate-600">
+                    <p>{txn.label}</p>
+                    <p>{formatCurrency(txn.amount, currency)}</p>
+                  </div>
+                </div>
+              ))
             )}
           </div>
         </section>

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, useCallback } from 'react';
 import { Plus, Filter, Trash2 } from 'lucide-react';
 import PageHeader from '@/components/PageHeader';
 import PrintWrapper from '@/components/PrintWrapper';
@@ -6,6 +6,7 @@ import ConfirmDialog from '@/components/ConfirmDialog';
 import { initDB, getDB } from '@/lib/db';
 import { formatDate, forceRepaintAfterRender, removeLeadingZeros } from '@/lib/utils';
 import { useBusiness } from '@/contexts/BusinessContext';
+import { useDexiePagination } from '@/hooks/useDexiePagination';
 
 export default function Inventory() {
   const { businessColor } = useBusiness();
@@ -16,15 +17,8 @@ export default function Inventory() {
   const [adjustForm, setAdjustForm] = useState({ quantity: '', note: '', type: 'add' });
   const [adjustmentError, setAdjustmentError] = useState('');
   const [filter, setFilter] = useState('all');
-  const [categoryFilter, setCategoryFilter] = useState('all');
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleteItemId, setDeleteItemId] = useState(null);
-
-  // Get unique categories from products
-  const categories = useMemo(() => {
-    const cats = [...new Set(products.map(p => p.category).filter(Boolean))];
-    return cats.sort();
-  }, [products]);
 
   // Reset modal state when business changes (prevents stale state in Electron)
   useEffect(() => {
@@ -38,51 +32,45 @@ export default function Inventory() {
     };
   }, []);
 
-  useEffect(() => {
-    const load = async () => {
-      await initDB();
-      const currentDB = getDB();
-      const [productsData, inventoryData] = await Promise.all([
-        currentDB.products.toArray(),
-        currentDB.inventory.toArray()
-      ]);
-      setProducts(productsData);
-      setInventory(inventoryData);
-    };
-    load();
-  }, []);
+  const queryBuilder = useCallback((db) => {
+    return db.inventory.reverse().filter((item) => {
+      if (filter === 'out') return item.quantity <= 0;
+      if (filter === 'low') return item.quantity <= item.lowStockThreshold || item.quantity <= 0;
+      return true;
+    });
+  }, [filter]);
 
-  const inventoryView = useMemo(() => {
+  const transformChunk = useCallback(async (chunk) => {
+    const currentDB = getDB();
+    const productIds = chunk.map(i => i.productId);
+    
+    // Only fetch the products needed for this 20-item chunk, eliminating RAM bottleneck!
+    const productsData = await currentDB.products.where('id').anyOf(productIds).toArray();
+    
     const today = new Date();
     const warningDate = new Date();
     warningDate.setDate(today.getDate() + 30);
-    
-    return inventory
-      .map((item) => {
-        const product = products.find((product) => product.id === item.productId);
-        const expDate = product?.expiryDate ? new Date(product.expiryDate) : null;
-        let expiryStatus = 'ok';
-        if (expDate) {
-          if (expDate < today) expiryStatus = 'expired';
-          else if (expDate <= warningDate) expiryStatus = 'warning';
-        }
-        return {
-          ...item,
-          productName: product?.name ?? 'Unknown',
-          category: product?.category ?? '',
-          unit: product?.unit ?? '',
-          expiryDate: product?.expiryDate || '',
-          expiryStatus,
-        };
-      })
-      .filter((item) => {
-        if (item.productName === 'Unknown') return false;
-        if (filter === 'low') return item.quantity > 0 && item.quantity <= item.lowStockThreshold;
-        if (filter === 'out') return item.quantity <= 0;
-        if (categoryFilter !== 'all' && item.category !== categoryFilter) return false;
-        return true;
-      });
-  }, [filter, categoryFilter, inventory, products]);
+
+    return chunk.map((item) => {
+      const product = productsData.find((p) => p.id === item.productId);
+      const expDate = product?.expiryDate ? new Date(product.expiryDate) : null;
+      let expiryStatus = 'ok';
+      if (expDate) {
+        if (expDate < today) expiryStatus = 'expired';
+        else if (expDate <= warningDate) expiryStatus = 'warning';
+      }
+      return {
+        ...item,
+        productName: product?.name ?? 'Unknown',
+        unit: product?.unit ?? '',
+        expiryDate: product?.expiryDate || '',
+        expiryStatus,
+        status: item.quantity <= 0 ? 'Out' : item.quantity <= item.lowStockThreshold ? 'Low' : 'OK'
+      };
+    }).filter(item => item.productName !== 'Unknown');
+  }, []);
+
+  const { data: visibleData, loadMoreRef, hasMore, refresh: refreshInventory } = useDexiePagination(queryBuilder, [filter], 20, transformChunk, 'inventory');
 
   const handleAdjust = (item) => {
     setSelectedItem(item);
@@ -103,46 +91,35 @@ export default function Inventory() {
     }
     
     const quantityChange = adjustForm.type === 'add' ? adjustForm.quantity : -adjustForm.quantity;
-    const updatedQuantity = Math.max(0, selectedItem.quantity + quantityChange);
+    const newQuantity = Math.max(0, selectedItem.quantity + quantityChange);
     
     await currentDB.inventory.update(selectedItem.id, {
-      quantity: updatedQuantity,
+      quantity: Number(newQuantity),
       lastUpdated: new Date().toISOString(),
     });
-    setInventory((current) =>
-      current.map((item) =>
-        item.id === selectedItem.id
-          ? { ...item, quantity: updatedQuantity, lastUpdated: new Date().toISOString() }
-          : item
-      )
-    );
+    
+    refreshInventory();
     setAdjustOpen(false);
     setAdjustmentError('');
   };
 
-  // Delete single inventory item
   const deleteInventoryItem = async () => {
     if (!deleteItemId) return;
     const idToDelete = deleteItemId;
     const currentDB = getDB();
     try {
       await currentDB.inventory.delete(idToDelete);
-      setInventory((current) => current.filter((item) => item.id !== idToDelete));
+      refreshInventory();
+      setConfirmDelete(false);
     } catch (error) {
       console.error('Error deleting inventory item:', error);
       return;
     }
-    // Reset selectedItem if it matches the deleted item to prevent stale state
     if (selectedItem && selectedItem.id === idToDelete) {
       setSelectedItem(null);
     }
-    // Reset state in order to prevent UI issues
-    setConfirmDelete(false);
     setDeleteItemId(null);
-    // Reset adjust form to prevent stale data
     setAdjustForm({ quantity: '', note: '', type: 'add' });
-    
-    // Force repaint after React DOM updates complete
     forceRepaintAfterRender();
   };
 
@@ -150,36 +127,19 @@ export default function Inventory() {
     <div className="space-y-6">
       <PageHeader title="Inventory" description="Track stock levels, adjust inventory, and print reports" />
 
-      <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-panel">
-        <div className="mb-4 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-          <div className="flex items-center gap-3">
-            <div className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-2 text-sm text-slate-600">
-              <Filter className="h-4 w-4" />
-              <select
-                value={filter}
-                onChange={(event) => setFilter(event.target.value)}
-                className="bg-transparent outline-none text-slate-900"
-              >
-                <option value="all">All stock</option>
-                <option value="low">Low stock</option>
-                <option value="out">Out of stock</option>
-              </select>
-            </div>
-            <div className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-2 text-sm text-slate-600">
-              <select
-                value={categoryFilter}
-                onChange={(event) => setCategoryFilter(event.target.value)}
-                className="bg-transparent outline-none text-slate-900"
-              >
-                <option value="all">All Categories</option>
-                {categories.map((cat) => (
-                  <option key={cat} value={cat}>{cat}</option>
-                ))}
-              </select>
-            </div>
-          </div>
-          <div className="flex items-center gap-3 text-sm text-slate-600">
-            <span>{inventoryView.length} items displayed</span>
+      <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+        <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-2 text-sm text-slate-600">
+            <Filter className="h-4 w-4" />
+            <select
+              value={filter}
+              onChange={(event) => setFilter(event.target.value)}
+              className="bg-transparent outline-none text-slate-900"
+            >
+              <option value="all">All stock</option>
+              <option value="low">Low stock</option>
+              <option value="out">Out of stock</option>
+            </select>
           </div>
         </div>
 
@@ -188,7 +148,6 @@ export default function Inventory() {
             <thead>
               <tr className="border-b border-slate-200 text-slate-600 bg-white">
                 <th className="px-4 py-3">Product</th>
-                <th className="px-4 py-3">Category</th>
                 <th className="px-4 py-3">Current Stock</th>
                 <th className="px-4 py-3">Unit</th>
                 <th className="px-4 py-3">Expiry</th>
@@ -198,7 +157,7 @@ export default function Inventory() {
               </tr>
             </thead>
             <tbody>
-               {inventoryView.map((item) => {
+               {visibleData.map((item) => {
                  const status = item.quantity <= 0 ? 'Out' : item.quantity <= item.lowStockThreshold ? 'Low' : 'OK';
                  const statusClass = status === 'Out' ? 'bg-red-100 text-red-700' : status === 'Low' ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700';
                  
@@ -211,7 +170,6 @@ export default function Inventory() {
                  return (
                    <tr key={item.id} className="border-b border-slate-200 hover:bg-slate-50">
                      <td className="px-4 py-4 font-semibold text-slate-900">{item.productName}</td>
-                    <td className="px-4 py-4 text-slate-700">{item.category}</td>
                     <td className="px-4 py-4 text-slate-700">{item.quantity}</td>
                     <td className="px-4 py-4 text-slate-700">{item.unit}</td>
                     <td className="px-4 py-4">
@@ -249,6 +207,13 @@ export default function Inventory() {
                   </tr>
                 );
               })}
+              {hasMore && (
+                <tr ref={loadMoreRef}>
+                  <td colSpan="7" className="p-4 text-center text-sm text-slate-500">
+                    Loading more...
+                  </td>
+                </tr>
+              )}
             </tbody>
           </table>
         </div>
@@ -260,7 +225,6 @@ export default function Inventory() {
             <thead>
               <tr className="border-b border-slate-200 bg-slate-100 text-slate-700">
                 <th className="px-4 py-3">Product</th>
-                <th className="px-4 py-3">Category</th>
                 <th className="px-4 py-3">Current Stock</th>
                 <th className="px-4 py-3">Expiry</th>
                 <th className="px-4 py-3">Low Threshold</th>
@@ -268,10 +232,9 @@ export default function Inventory() {
               </tr>
             </thead>
             <tbody>
-              {inventoryView.map((item) => (
+              {visibleData.map((item) => (
                 <tr key={item.id} className="border-b border-slate-200">
                   <td className="px-4 py-3 text-slate-900">{item.productName}</td>
-                  <td className="px-4 py-3 text-slate-700">{item.category}</td>
                   <td className="px-4 py-3 text-slate-700">{item.quantity}</td>
                   <td className="px-4 py-3 text-slate-700">{item.expiryDate ? new Date(item.expiryDate).toLocaleDateString() : '-'}</td>
                   <td className="px-4 py-3 text-slate-700">{item.lowStockThreshold}</td>

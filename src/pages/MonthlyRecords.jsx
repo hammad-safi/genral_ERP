@@ -1,10 +1,13 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { useRef } from 'react'
 import { useReactToPrint } from 'react-to-print'
 import { useBusiness } from '@/contexts/BusinessContext'
 import { useSettings } from '@/hooks/useSettings'
-import { formatCurrency as formatCurrencyUtil, calculateNetProfit } from '@/lib/utils'
+import { formatCurrency as formatCurrencyUtil } from '@/lib/utils'
+import { getDB } from '@/lib/db'
+
+let globalMonthlyRecordsCache = null;
 
 export default function MonthlyRecords() {
   const { db } = useBusiness()
@@ -17,91 +20,49 @@ export default function MonthlyRecords() {
     documentTitle: 'Monthly_Records',
   })
 
-  // Get ALL data grouped by month
-  const allData = useLiveQuery(async () => {
-    if (!db) return null
-    const [sales, purchases, expenses, products, customers] = await Promise.all([
-      db.sales.toArray(),
-      db.purchases.toArray(),
-      db.expenses.toArray(),
-      db.products.toArray(),
-      db.customers.toArray(),
-    ])
+  const dbVersion = useLiveQuery(async () => {
+    if (!db) return undefined;
+    return (await db.sales.count()) + (await db.purchases.count()) + (await db.expenses.count());
+  }, [db]);
 
-    // Group by month helper
-    const groupByMonth = (items) => {
-      const groups = {}
-      items.forEach(item => {
-        const d = new Date(item.date)
-        const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
-        if (!groups[key]) groups[key] = []
-        groups[key].push(item)
-      })
-      return groups
-    }
+  const [metrics, setMetrics] = useState(globalMonthlyRecordsCache);
+  const [loadingError, setLoadingError] = useState(null);
 
-    const salesByMonth = groupByMonth(sales)
-    const purchasesByMonth = groupByMonth(purchases)
-    const expensesByMonth = groupByMonth(expenses)
+  useEffect(() => {
+    if (dbVersion === undefined) return;
 
-    // Get all unique months
-    const allMonths = [...new Set([
-      ...Object.keys(salesByMonth),
-      ...Object.keys(purchasesByMonth),
-      ...Object.keys(expensesByMonth)
-    ])].sort().reverse() // newest first
+    const worker = new Worker(new URL('../workers/metricsWorker.js', import.meta.url), { type: 'module' });
 
-    // Build month summaries
-    const monthSummaries = allMonths.map(month => {
-      const monthlySales = salesByMonth[month] ?? []
-      const monthlyPurchases = purchasesByMonth[month] ?? []
-      const monthlyExpenses = expensesByMonth[month] ?? []
-
-      const totalSales = monthlySales.reduce((s, x) => s + (x.totalAmount ?? 0), 0)
-      const totalPurchases = monthlyPurchases.reduce((s, x) => s + (x.totalCost ?? 0), 0)
-      const totalExpenses = monthlyExpenses.reduce((s, x) => s + (x.amount ?? 0), 0)
-      const netProfit = calculateNetProfit(monthlySales, products, monthlyExpenses)
-
-      const [year, mon] = month.split('-')
-      const monthName = new Date(Number(year), Number(mon) - 1).toLocaleString('default', {
-        month: 'long', year: 'numeric'
-      })
-
-      const monthlySalesMapped = monthlySales.map(sale => {
-        let customerName = 'Walk-in';
-        if (sale.customerId) {
-          customerName = customers.find(c => c.id === sale.customerId)?.name ?? 'Walk-in';
-        }
-        return { ...sale, customerName };
-      });
-
-      return {
-        key: month,
-        monthName,
-        sales: monthlySalesMapped,
-        purchases: monthlyPurchases,
-        expenses: monthlyExpenses,
-        totalSales,
-        totalPurchases,
-        totalExpenses,
-        netProfit
+    worker.onmessage = (e) => {
+      if (e.data.type === 'MONTHLY_RECORDS_METRICS_RESULT') {
+        globalMonthlyRecordsCache = e.data.payload;
+        setMetrics(e.data.payload);
+      } else if (e.data.type === 'ERROR') {
+        setLoadingError(e.data.payload);
       }
-    })
+    };
 
-    // Grand totals
-    const grandTotalSales = monthSummaries.reduce((s, m) => s + m.totalSales, 0)
-    const grandTotalPurchases = monthSummaries.reduce((s, m) => s + m.totalPurchases, 0)
-    const grandTotalExpenses = monthSummaries.reduce((s, m) => s + m.totalExpenses, 0)
-    const grandNetProfit = monthSummaries.reduce((s, m) => s + m.netProfit, 0)
+    worker.postMessage({ type: 'MONTHLY_RECORDS_METRICS' });
 
-    return {
-      monthSummaries,
-      grandTotalSales,
-      grandTotalPurchases,
-      grandTotalExpenses,
-      grandNetProfit
-    }
-  }, [db])
+    return () => {
+      worker.terminate();
+    };
+  }, [dbVersion]);
+
+  if (loadingError) {
+    return <div style={{ padding: 32, color: 'red', textAlign: 'center' }}>Error loading monthly records: {loadingError}</div>;
+  }
+  if (!metrics) {
+    return <div style={{ padding: 32, textAlign: 'center' }}>Crunching monthly records...</div>;
+  }
+
+  const {
+    monthSummaries = [],
+    grandTotalSales = 0,
+    grandTotalPurchases = 0,
+    grandTotalExpenses = 0,
+    grandNetProfit = 0
+  } = metrics;
 
   const formatCurrency = (amount) => formatCurrencyUtil(amount, settings?.currency ?? 'Rs')
 
@@ -132,31 +93,31 @@ export default function MonthlyRecords() {
         <div className="bg-green-50 border border-green-200 rounded-xl p-4">
           <p className="text-xs text-green-600 font-medium uppercase">All Time Sales</p>
           <p className="text-2xl font-bold text-green-700">
-            {formatCurrency(allData?.grandTotalSales ?? 0)}
+            {formatCurrency(metrics?.grandTotalSales ?? 0)}
           </p>
         </div>
         <div className="bg-blue-50 border border-blue-200 rounded-xl p-4">
           <p className="text-xs text-blue-600 font-medium uppercase">All Time Purchases</p>
           <p className="text-2xl font-bold text-blue-700">
-            {formatCurrency(allData?.grandTotalPurchases ?? 0)}
+            {formatCurrency(metrics?.grandTotalPurchases ?? 0)}
           </p>
         </div>
         <div className="bg-red-50 border border-red-200 rounded-xl p-4">
           <p className="text-xs text-red-600 font-medium uppercase">All Time Expenses</p>
           <p className="text-2xl font-bold text-red-700">
-            {formatCurrency(allData?.grandTotalExpenses ?? 0)}
+            {formatCurrency(metrics?.grandTotalExpenses ?? 0)}
           </p>
         </div>
         <div className={`border rounded-xl p-4 ${
-          (allData?.grandNetProfit ?? 0) >= 0
+          (metrics?.grandNetProfit ?? 0) >= 0
             ? 'bg-emerald-50 border-emerald-200'
             : 'bg-orange-50 border-orange-200'
         }`}>
           <p className="text-xs font-medium text-gray-500 uppercase">Total Net Profit</p>
           <p className={`text-2xl font-bold ${
-            (allData?.grandNetProfit ?? 0) >= 0 ? 'text-emerald-700' : 'text-orange-700'
+            (metrics?.grandNetProfit ?? 0) >= 0 ? 'text-emerald-700' : 'text-orange-700'
           }`}>
-            {formatCurrency(allData?.grandNetProfit ?? 0)}
+            {formatCurrency(metrics?.grandNetProfit ?? 0)}
           </p>
         </div>
       </div>
@@ -168,7 +129,7 @@ export default function MonthlyRecords() {
 
       {/* Month by Month Records */}
       <div className="space-y-4">
-        {allData?.monthSummaries && allData.monthSummaries.map(month => (
+        {metrics?.monthSummaries && metrics.monthSummaries.map(month => (
           <div key={month.key} className="bg-white rounded-xl border border-slate-200 overflow-hidden">
 
             {/* Month Header — click to expand */}
@@ -367,7 +328,7 @@ export default function MonthlyRecords() {
           </div>
         ))}
 
-        {(!allData?.monthSummaries || allData.monthSummaries.length === 0) && (
+        {(!metrics?.monthSummaries || metrics.monthSummaries.length === 0) && (
           <div className="bg-white rounded-xl border p-12 text-center">
             <p className="text-4xl mb-3">📅</p>
             <p className="text-gray-500">No records found yet.</p>
@@ -378,7 +339,7 @@ export default function MonthlyRecords() {
       </div>
 
       {/* Hidden Monthly Report for Printing — Always Expanded */}
-      <div ref={printRef} style={{ display: 'none' }}>
+      <div ref={printRef} className="print-source">
         <style dangerouslySetInnerHTML={{ __html:
           "@media print { " +
           "@page { size: A4 portrait; margin: 20mm; } " +
@@ -414,25 +375,25 @@ export default function MonthlyRecords() {
           <div className="summary-grid">
             <div className="summary-box">
               <div className="summary-label">Total Sales</div>
-              <div className="summary-val">{formatCurrency(allData?.grandTotalSales ?? 0)}</div>
+              <div className="summary-val">{formatCurrency(metrics?.grandTotalSales ?? 0)}</div>
             </div>
             <div className="summary-box">
               <div className="summary-label">Total Purchases</div>
-              <div className="summary-val">{formatCurrency(allData?.grandTotalPurchases ?? 0)}</div>
+              <div className="summary-val">{formatCurrency(metrics?.grandTotalPurchases ?? 0)}</div>
             </div>
             <div className="summary-box">
               <div className="summary-label">Total Expenses</div>
-              <div className="summary-val">{formatCurrency(allData?.grandTotalExpenses ?? 0)}</div>
+              <div className="summary-val">{formatCurrency(metrics?.grandTotalExpenses ?? 0)}</div>
             </div>
             <div className="summary-box">
               <div className="summary-label">Net Profit</div>
-              <div className={`summary-val ${(allData?.grandNetProfit ?? 0) >= 0 ? 'profit-green' : 'profit-red'}`}>
-                {formatCurrency(allData?.grandNetProfit ?? 0)}
+              <div className={`summary-val ${(metrics?.grandNetProfit ?? 0) >= 0 ? 'profit-green' : 'profit-red'}`}>
+                {formatCurrency(metrics?.grandNetProfit ?? 0)}
               </div>
             </div>
           </div>
 
-          {allData?.monthSummaries && allData.monthSummaries.map(month => (
+          {metrics?.monthSummaries && metrics.monthSummaries.map(month => (
             <div key={month.key} className="month-section">
               <div className="month-title">
                 <span>{month.monthName}</span>

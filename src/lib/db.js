@@ -48,7 +48,7 @@
  * DATABASE SCHEMA:
  * V1 (14 tables):
  *   - products, inventory, purchases, sales, suppliers, customers
- *   - expenses, salesReturns, students, studentLedger, customerLedger, settings
+ *   - expenses, salesReturns, customerLedger, settings
  * 
  * V2 (14 tables + expiryDate):
  *   - Same as V1 but products/inventory/purchases track expiration
@@ -233,7 +233,7 @@ async function initializeDefaultSettings(targetDB) {
   if (settingsCount === 0) {
     // Set defaults for Pharmacy
     const businessDefaults = {
-      shopName: 'Pharmacy Store',
+      shopName: 'General Store',
       currency: 'Rs',
       address: '',
       phone: '',
@@ -318,8 +318,6 @@ export async function forceInitDB() {
   await targetDB.sales.clear();
   await targetDB.suppliers.clear();
   await targetDB.expenses.clear();
-  await targetDB.students.clear();
-  await targetDB.studentLedger.clear();
   await targetDB.salesReturns.clear();
   await targetDB.settings.clear();
   await targetDB.customers.clear();
@@ -459,7 +457,7 @@ export { initDB as initDb };
  * 2. ConfirmDialog asks for verification
  * 3. On confirmation, resetDatabase() is called
  * 4. All tables are cleared (products, inventory, purchases, sales, suppliers, 
- *    expenses, students, studentLedger, salesReturns, settings, customers, customerLedger)
+ *    expenses, salesReturns, settings, customers, customerLedger)
  * 5. Database opens empty for user to add new data
  * 6. NO automatic re-seeding happens
  * 
@@ -477,8 +475,6 @@ export async function resetDatabase() {
   await targetDB.sales.clear();
   await targetDB.suppliers.clear();
   await targetDB.expenses.clear();
-  await targetDB.students.clear();
-  await targetDB.studentLedger.clear();
   await targetDB.salesReturns.clear();
   await targetDB.settings.clear();
   await targetDB.customers.clear();

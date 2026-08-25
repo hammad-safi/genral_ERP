@@ -18,7 +18,7 @@ export const BusinessContext = createContext({
 
 export const businessConfig = {
   pharmacy: {
-    name: 'Pharmacy / Medical Store',
+    name: 'General Store',
     icon: '💊',
     color: 'emerald',
     bgColor: 'bg-emerald-600',

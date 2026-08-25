@@ -1,6 +1,18 @@
-const { app, BrowserWindow, shell, ipcMain } = require('electron');
+const { app, BrowserWindow, shell, ipcMain, screen } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const { machineIdSync } = require('node-machine-id');
+const crypto = require('crypto');
+
+const PUBLIC_KEY = `-----BEGIN PUBLIC KEY-----
+MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAw3gfPMCiBNEK6FgvRH/b
+LXUjmzjLwcAYpCOdBnr7pvYHtliCUbcrXuNYbsq4F8D/oN9iuHfDLFsN5TAIvSEc
+4uBKZ/vST3zkK1jOIN0ar5MPkCndB3woo6bbmNsFEsEgn0Y/AFgC0t2i+LKK89iI
+5oGqMD1AqbwOUJ5kIGPWfRSrz0bSQHDf6rWa0NczTwVoASnpYg2vW9+0bBtA5Xjg
+Xl5Tp5wu5YlNrTV/xGqZhr8uge4dhVX+xSHf0oGJSLxzG8es/+SKKPY9dfm2WmvP
+4yc741cRCnPWNtEt/wEZ0L+YcQEYaaDx5TwWFIs1ARZjiZ7hXDjS5GJk4Fvg/Mgq
+FwIDAQAB
+-----END PUBLIC KEY-----`;
 
 // Detect portable mode: check if portable.flag exists next to the exe.
 // If yes → store data beside the exe (USB portable, data travels with drive).
@@ -24,9 +36,14 @@ app.disableHardwareAcceleration();
 let mainWindow;
 
 function createWindow() {
+  const primaryDisplay = screen.getPrimaryDisplay();
+  const { width, height } = primaryDisplay.workAreaSize;
+  const winWidth = Math.floor(width * 0.75);
+  const winHeight = Math.floor(height * 0.75);
+
   mainWindow = new BrowserWindow({
-    width: 1280,
-    height: 800,
+    width: winWidth,
+    height: winHeight,
     minWidth: 900,
     minHeight: 600,
     show: false,
@@ -69,6 +86,12 @@ function createWindow() {
 ipcMain.on('force-repaint', () => {
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.invalidate();
+  }
+});
+
+ipcMain.on('update-window-title', (event, title) => {
+  if (mainWindow && !mainWindow.isDestroyed() && title) {
+    mainWindow.setTitle(title);
   }
 });
 
@@ -149,8 +172,8 @@ ipcMain.on('print-receipt', (event, { htmlContent, printerName }) => {
   });
 });
 
-// IPC handler: silent 50mm QR label sticker printing
-ipcMain.on('print-qr-label', (event, { htmlContent, printerName }) => {
+// IPC handler: silent QR label sticker printing
+ipcMain.on('print-qr-label', (event, { htmlContent, printerName, quantity = 1 }) => {
   let printWindow = new BrowserWindow({
     show: false,
     webPreferences: {
@@ -190,12 +213,108 @@ ipcMain.on('print-qr-label', (event, { htmlContent, printerName }) => {
     printWindow.webContents.print({ 
       silent: true, 
       printBackground: true,
-      deviceName: printerName || undefined
+      deviceName: printerName || undefined,
+      copies: quantity
     }, (success, errorType) => {
       event.sender.send('print-qr-result', { success, errorType });
       printWindow.close();
     });
   });
+});
+
+// IPC handler: print current window (for A4 reports)
+ipcMain.on('print-current-page', (event, { printerName }) => {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    const printOptions = {
+      printBackground: true,
+      silent: !!printerName,
+      deviceName: printerName || undefined
+    };
+    
+    mainWindow.webContents.print(printOptions, (success, errorType) => {
+      event.sender.send('print-current-page-result', { success, errorType });
+    });
+  } else {
+    event.sender.send('print-current-page-result', { success: false, errorType: 'No window available' });
+  }
+});
+
+// Licensing IPC handlers
+ipcMain.handle('get-system-id', () => {
+  try {
+    return machineIdSync();
+  } catch (e) {
+    return 'UNKNOWN-SYSTEM-ID';
+  }
+});
+
+function verifyLicenseKey(systemId, signatureBase64) {
+  try {
+    const verify = crypto.createVerify('SHA256');
+    verify.update(systemId);
+    verify.end();
+    return verify.verify(PUBLIC_KEY, signatureBase64, 'base64');
+  } catch (e) {
+    return false;
+  }
+}
+
+ipcMain.handle('check-license', () => {
+  const licensePath = path.join(app.getPath('userData'), 'license.key');
+  let isLicensed = false;
+  
+  if (fs.existsSync(licensePath)) {
+    const signatureBase64 = fs.readFileSync(licensePath, 'utf8').trim();
+    try {
+      const systemId = machineIdSync();
+      isLicensed = verifyLicenseKey(systemId, signatureBase64);
+    } catch(e) {}
+  }
+
+  // Trial Logic
+  const trialPath = path.join(app.getPath('userData'), 'trial.dat');
+  let firstRunTime;
+  
+  if (!fs.existsSync(trialPath)) {
+    firstRunTime = Date.now();
+    fs.writeFileSync(trialPath, firstRunTime.toString());
+  } else {
+    firstRunTime = parseInt(fs.readFileSync(trialPath, 'utf8'), 10);
+  }
+
+  const TWO_DAYS_MS = 2 * 24 * 60 * 60 * 1000;
+  const now = Date.now();
+  let isTrialValid = false;
+  let trialDaysLeft = 0;
+
+  if (now >= firstRunTime && (now - firstRunTime) <= TWO_DAYS_MS) {
+    isTrialValid = true;
+    trialDaysLeft = Math.ceil((TWO_DAYS_MS - (now - firstRunTime)) / (1000 * 60 * 60 * 24));
+  }
+
+  return {
+    isLicensed,
+    isTrialValid,
+    trialDaysLeft
+  };
+});
+
+ipcMain.handle('activate-license', (event, signatureBase64) => {
+  let systemId = '';
+  try {
+    systemId = machineIdSync();
+  } catch(e) {
+    return { success: false, message: 'Could not generate system ID' };
+  }
+  
+  const isValid = verifyLicenseKey(systemId, signatureBase64);
+  if (isValid) {
+    const licensePath = path.join(app.getPath('userData'), 'license.key');
+    fs.writeFileSync(licensePath, signatureBase64.trim());
+    return { success: true };
+  } else {
+    return { success: false, message: 'Invalid activation key' };
+  }
 });
 
 app.whenReady().then(createWindow);
