@@ -9,15 +9,18 @@ import './App.css';
 const Dashboard = lazy(() => import('@/pages/Dashboard'));
 const Products = lazy(() => import('@/pages/Products'));
 const Inventory = lazy(() => import('@/pages/Inventory'));
+const POS = lazy(() => import('@/pages/POS'));
 const Sales = lazy(() => import('@/pages/Sales'));
 const Purchases = lazy(() => import('@/pages/Purchases'));
 const Suppliers = lazy(() => import('@/pages/Suppliers'));
+const SupplierDetail = lazy(() => import('@/pages/SupplierDetail'));
 const Customers = lazy(() => import('@/pages/Customers'));
 const CustomerDetail = lazy(() => import('@/pages/CustomerDetail'));
 const Expenses = lazy(() => import('@/pages/Expenses'));
 const Reports = lazy(() => import('@/pages/Reports'));
 const Settings = lazy(() => import('@/pages/Settings'));
 const MonthlyRecords = lazy(() => import('@/pages/MonthlyRecords'));
+const Categories = lazy(() => import('@/pages/Categories'));
 
 // Loading fallback component
 const LoadingFallback = () => (
@@ -36,10 +39,13 @@ function BusinessRoutes() {
       <Routes>
         <Route path="/" element={<Dashboard />} />
         <Route path="/products" element={<Products />} />
+        <Route path="/categories" element={<Categories />} />
         <Route path="/inventory" element={<Inventory />} />
+        <Route path="/pos" element={<POS />} />
         <Route path="/sales" element={<Sales />} />
         <Route path="/purchases" element={<Purchases />} />
         <Route path="/suppliers" element={<Suppliers />} />
+        <Route path="/suppliers/:id" element={<SupplierDetail />} />
         <Route path="/customers" element={<Customers />} />
         <Route path="/customers/:id" element={<CustomerDetail />} />
         <Route path="/expenses" element={<Expenses />} />
@@ -92,9 +98,9 @@ function App() {
   return (
     <BusinessProvider>
       <Router future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
-        <div className="flex min-h-screen bg-slate-50">
+        <div className="flex min-h-screen bg-slate-50 overflow-hidden">
           <Navbar />
-          <main className="flex-1">
+          <main className="flex-1 min-w-0 overflow-y-auto h-screen">
             {licenseStatus.isUsingTrial && (
               <div className="bg-amber-100 border-l-4 border-amber-500 text-amber-700 p-3 mb-4 rounded shadow-sm flex justify-between items-center">
                 <p>
@@ -108,7 +114,7 @@ function App() {
                 </button>
               </div>
             )}
-            <div className="w-full max-w-screen-2xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
+            <div className="w-full px-4 sm:px-6 lg:px-8 py-6">
               <BusinessRoutes />
             </div>
           </main>

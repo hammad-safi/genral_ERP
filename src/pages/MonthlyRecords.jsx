@@ -1,18 +1,25 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
-import { useRef } from 'react'
 import { useReactToPrint } from 'react-to-print'
+import { Printer, BookOpen, X } from 'lucide-react'
 import { useBusiness } from '@/contexts/BusinessContext'
 import { useSettings } from '@/hooks/useSettings'
 import { formatCurrency as formatCurrencyUtil } from '@/lib/utils'
 import { getDB } from '@/lib/db'
+import GlobalTable from '@/components/GlobalTable'
+import GlobalButton from '@/components/GlobalButton'
+import RowsDropdown from '@/components/RowsDropdown'
+import GlobalSearch from '@/components/GlobalSearch'
 
 let globalMonthlyRecordsCache = null;
 
 export default function MonthlyRecords() {
   const { db } = useBusiness()
   const settings = useSettings()
-  const [expandedMonth, setExpandedMonth] = useState(null)
+  const [selectedMonthDetails, setSelectedMonthDetails] = useState(null)
+  const [limit, setLimit] = useState(20)
+  const [currentPage, setCurrentPage] = useState(1)
+  const [searchTerm, setSearchTerm] = useState('')
   const printRef = useRef(null)
 
   const handlePrint = useReactToPrint({
@@ -49,6 +56,45 @@ export default function MonthlyRecords() {
     };
   }, [dbVersion]);
 
+  // Reset page to 1 on search
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchTerm, limit]);
+
+  const paginationData = useMemo(() => {
+    const allSummaries = metrics?.monthSummaries || [];
+    const filteredSummaries = searchTerm.trim() 
+      ? allSummaries.filter(m => m.monthName.toLowerCase().includes(searchTerm.toLowerCase()))
+      : allSummaries;
+
+    const totalCount = filteredSummaries.length;
+    const totalPages = Math.max(1, Math.ceil(totalCount / limit));
+    
+    const getPageNumbers = () => {
+      const pages = [];
+      if (totalPages <= 5) {
+        for (let i = 1; i <= totalPages; i++) pages.push(i);
+      } else {
+        if (currentPage <= 3) {
+          pages.push(1, 2, 3, 4, '...', totalPages);
+        } else if (currentPage >= totalPages - 2) {
+          pages.push(1, '...', totalPages - 3, totalPages - 2, totalPages - 1, totalPages);
+        } else {
+          pages.push(1, '...', currentPage - 1, currentPage, currentPage + 1, '...', totalPages);
+        }
+      }
+      return pages;
+    };
+
+    const startItem = totalCount === 0 ? 0 : (currentPage - 1) * limit + 1;
+    const endItem = Math.min(currentPage * limit, totalCount);
+    
+    // Slice data for local pagination
+    const visibleData = filteredSummaries.slice(startItem === 0 ? 0 : startItem - 1, endItem);
+
+    return { totalCount, totalPages, getPageNumbers, startItem, endItem, visibleData };
+  }, [metrics, currentPage, limit, searchTerm]);
+
   if (loadingError) {
     return <div style={{ padding: 32, color: 'red', textAlign: 'center' }}>Error loading monthly records: {loadingError}</div>;
   }
@@ -74,270 +120,315 @@ export default function MonthlyRecords() {
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold text-slate-900">Monthly Records</h1>
-          <p className="text-gray-500 text-sm">Complete history grouped by month</p>
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 pb-2">
+        <h1 className="text-2xl sm:text-3xl font-bold text-slate-900 tracking-tight">Monthly Records</h1>
+        <div className="flex items-center gap-3 shrink-0 mt-2 md:mt-0">
+          <GlobalButton
+            icon={Printer}
+            onClick={handlePrint}
+            variant="outline"
+          >
+            Print All Records
+          </GlobalButton>
         </div>
-        <button
-          onClick={handlePrint}
-          className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700"
-        >
-          🖨 Print All Records
-        </button>
       </div>
 
       {/* Grand Total Cards */}
-      <div className="w-full">
-        <div className="grid grid-cols-4 gap-4">
-        <div className="bg-green-50 border border-green-200 rounded-xl p-4">
-          <p className="text-xs text-green-600 font-medium uppercase">All Time Sales</p>
-          <p className="text-2xl font-bold text-green-700">
-            {formatCurrency(metrics?.grandTotalSales ?? 0)}
-          </p>
+      <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <div className="rounded-xl border border-slate-200 border-l-4 border-l-blue-500 bg-white p-5 shadow-sm flex flex-col justify-between hover:-translate-y-0.5 hover:shadow-card-hover transition-all duration-200">
+          <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">All Time Sales</p>
+          <div className="mt-3">
+            <p className="text-2xl font-bold text-slate-900">{formatCurrency(metrics?.grandTotalSales ?? 0)}</p>
+            <p className="text-[11px] font-medium text-slate-500 mt-1">Total value of all sales</p>
+          </div>
         </div>
-        <div className="bg-blue-50 border border-blue-200 rounded-xl p-4">
-          <p className="text-xs text-blue-600 font-medium uppercase">All Time Purchases</p>
-          <p className="text-2xl font-bold text-blue-700">
-            {formatCurrency(metrics?.grandTotalPurchases ?? 0)}
-          </p>
+        <div className="rounded-xl border border-slate-200 border-l-4 border-l-blue-500 bg-white p-5 shadow-sm flex flex-col justify-between hover:-translate-y-0.5 hover:shadow-card-hover transition-all duration-200">
+          <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">All Time Purchases</p>
+          <div className="mt-3">
+            <p className="text-2xl font-bold text-slate-900">{formatCurrency(metrics?.grandTotalPurchases ?? 0)}</p>
+            <p className="text-[11px] font-medium text-slate-500 mt-1">Total value of all purchases</p>
+          </div>
         </div>
-        <div className="bg-red-50 border border-red-200 rounded-xl p-4">
-          <p className="text-xs text-red-600 font-medium uppercase">All Time Expenses</p>
-          <p className="text-2xl font-bold text-red-700">
-            {formatCurrency(metrics?.grandTotalExpenses ?? 0)}
-          </p>
+        <div className="rounded-xl border border-slate-200 border-l-4 border-l-blue-500 bg-white p-5 shadow-sm flex flex-col justify-between hover:-translate-y-0.5 hover:shadow-card-hover transition-all duration-200">
+          <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">All Time Expenses</p>
+          <div className="mt-3">
+            <p className="text-2xl font-bold text-slate-900">{formatCurrency(metrics?.grandTotalExpenses ?? 0)}</p>
+            <p className="text-[11px] font-medium text-slate-500 mt-1">Total value of all expenses</p>
+          </div>
         </div>
-        <div className={`border rounded-xl p-4 ${
-          (metrics?.grandNetProfit ?? 0) >= 0
-            ? 'bg-emerald-50 border-emerald-200'
-            : 'bg-orange-50 border-orange-200'
-        }`}>
-          <p className="text-xs font-medium text-gray-500 uppercase">Total Net Profit</p>
-          <p className={`text-2xl font-bold ${
-            (metrics?.grandNetProfit ?? 0) >= 0 ? 'text-emerald-700' : 'text-orange-700'
-          }`}>
-            {formatCurrency(metrics?.grandNetProfit ?? 0)}
-          </p>
+        <div className="rounded-xl border border-slate-200 border-l-4 border-l-blue-500 bg-white p-5 shadow-sm flex flex-col justify-between hover:-translate-y-0.5 hover:shadow-card-hover transition-all duration-200">
+          <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Total Net Profit</p>
+          <div className="mt-3">
+            <p className="text-2xl font-bold text-slate-900">{formatCurrency(metrics?.grandNetProfit ?? 0)}</p>
+            <p className="text-[11px] font-medium text-slate-500 mt-1">Overall net profit</p>
+          </div>
         </div>
       </div>
 
-      <div className="bg-blue-50 border border-blue-200 rounded-xl px-4 py-3 text-xs text-blue-700 flex items-center gap-2">
-        <span>ℹ</span>
-        <span>Net Profit = Sales Revenue − Cost of Goods Sold (based on product cost prices) − Expenses. This matches the Dashboard and Reports views.</span>
-      </div>
-
-      {/* Month by Month Records */}
-      <div className="space-y-4">
-        {metrics?.monthSummaries && metrics.monthSummaries.map(month => (
-          <div key={month.key} className="bg-white rounded-xl border border-slate-200 overflow-hidden">
-
-            {/* Month Header — click to expand */}
-            <button
-              className="w-full flex items-center justify-between p-5 hover:bg-gray-50 transition-colors"
-              onClick={() => setExpandedMonth(
-                expandedMonth === month.key ? null : month.key
-              )}
-            >
-              <div className="flex items-center gap-4">
-                <div className="w-12 h-12 bg-blue-100 rounded-xl flex items-center justify-center">
-                  <span className="text-xl">📅</span>
-                </div>
-                <div className="text-left">
-                  <p className="font-bold text-gray-800">{month.monthName}</p>
-                  <p className="text-xs text-gray-400">
-                    {month.sales.length} sales · {month.purchases.length} purchases · {month.expenses.length} expenses
-                  </p>
-                </div>
+      <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-4">
+          <div className="flex-1">
+            <GlobalSearch
+              value={searchTerm}
+              onChange={setSearchTerm}
+              placeholder="Search by month..."
+              className="w-full max-w-md"
+            />
+          </div>
+        </div>
+        <div>
+          <GlobalTable
+            data={paginationData.visibleData}
+            columns={[
+              { header: "Month", className: "w-40" },
+              { header: "Sales" },
+              { header: "Purchases" },
+              { header: "Expenses" },
+              { header: "Net Profit" },
+              { header: "Actions", className: "w-24 text-center" },
+            ]}
+            renderRow={(month, virtualIndex) => {
+              const rowBg = virtualIndex % 2 === 0 ? 'bg-white' : 'bg-slate-50/50';
+              return (
+                <tr key={month.key} className={`border-b border-slate-200 hover:bg-slate-100 ${rowBg}`}>
+                  <td className="py-3 px-4 text-sm font-bold text-slate-800">{month.monthName}</td>
+                  <td className="py-3 px-4 text-sm">
+                    <div className="font-semibold text-green-600">{formatCurrency(month.totalSales)}</div>
+                    <div className="text-xs text-slate-400">{month.sales.length} transactions</div>
+                  </td>
+                  <td className="py-3 px-4 text-sm">
+                    <div className="font-semibold text-blue-600">{formatCurrency(month.totalPurchases)}</div>
+                    <div className="text-xs text-slate-400">{month.purchases.length} transactions</div>
+                  </td>
+                  <td className="py-3 px-4 text-sm">
+                    <div className="font-semibold text-red-500">{formatCurrency(month.totalExpenses)}</div>
+                    <div className="text-xs text-slate-400">{month.expenses.length} transactions</div>
+                  </td>
+                  <td className="py-3 px-4 text-sm">
+                    <div className={`font-bold ${month.netProfit >= 0 ? 'text-emerald-600' : 'text-orange-600'}`}>
+                      {formatCurrency(month.netProfit)}
+                    </div>
+                  </td>
+                  <td className="py-3 px-4 text-center">
+                    <button
+                      onClick={() => setSelectedMonthDetails(month)}
+                      className="rounded-lg border border-blue-200 bg-blue-50 p-2 text-blue-600 hover:bg-blue-100 transition-colors inline-flex items-center justify-center"
+                      title="View Details"
+                    >
+                      <BookOpen className="h-4 w-4" />
+                    </button>
+                  </td>
+                </tr>
+              );
+            }}
+            emptyState={
+              <div className="p-8 text-center text-slate-500">
+                No monthly records available
               </div>
-              <div className="flex items-center gap-6 text-right">
+            }
+          />
+          
+          <div className="mt-4 flex flex-col sm:flex-row items-center justify-between gap-4 pt-4 border-t border-slate-200">
+            <div className="flex items-center gap-4 text-xs text-slate-500">
+              <div>
+                Showing <span className="font-bold text-slate-700">{paginationData.startItem}</span> to <span className="font-bold text-slate-700">{paginationData.endItem}</span> of <span className="font-bold text-slate-700">{paginationData.totalCount}</span> items
+              </div>
+              <div className="h-3 w-px bg-slate-200"></div>
+              <div className="flex items-center gap-2">
+                <span>Rows:</span>
+                <RowsDropdown limit={limit} setLimit={setLimit} />
+              </div>
+            </div>
+
+            <div className="flex items-center rounded-lg border border-slate-200 bg-white p-1 shadow-sm text-sm font-medium text-slate-600">
+              <button 
+                onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
+                disabled={currentPage === 1}
+                className={`flex h-7 w-7 items-center justify-center rounded ${currentPage === 1 ? 'text-slate-300 cursor-not-allowed' : 'text-slate-600 hover:bg-slate-50 hover:text-blue-600'}`}
+              >
+                <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" /></svg>
+              </button>
+              
+              {paginationData.getPageNumbers().map((pageNum, idx) => (
+                <button
+                  key={idx}
+                  disabled={pageNum === '...'}
+                  onClick={() => typeof pageNum === 'number' && setCurrentPage(pageNum)}
+                  className={`flex h-7 w-7 items-center justify-center rounded ${
+                    pageNum === '...' 
+                      ? 'text-slate-400 cursor-default' 
+                      : pageNum === currentPage 
+                        ? 'bg-blue-50 text-blue-600' 
+                        : 'hover:bg-slate-50'
+                  }`}
+                >
+                  {pageNum}
+                </button>
+              ))}
+
+              <button 
+                onClick={() => setCurrentPage(prev => Math.min(paginationData.totalPages, prev + 1))}
+                disabled={currentPage === paginationData.totalPages}
+                className={`flex h-7 w-7 items-center justify-center rounded ${currentPage === paginationData.totalPages ? 'text-slate-300 cursor-not-allowed' : 'text-slate-600 hover:bg-slate-50 hover:text-blue-600'}`}
+              >
+                <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
+              </button>
+            </div>
+          </div>
+        </div>
+      </section>
+      {selectedMonthDetails && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-sm">
+          <div className="flex max-h-[90vh] w-full max-w-4xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl">
+            {/* Modal Header */}
+            <div className="flex items-center justify-between border-b border-slate-200 bg-slate-50 px-6 py-4">
+              <div>
+                <h2 className="text-xl font-bold text-slate-900">{selectedMonthDetails.monthName} Details</h2>
+                <p className="text-sm text-slate-500">Summary of all transactions</p>
+              </div>
+              <button
+                onClick={() => setSelectedMonthDetails(null)}
+                className="rounded-full p-2 text-slate-400 hover:bg-slate-200 hover:text-slate-600 transition-colors"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <div className="flex-1 overflow-y-auto p-6 space-y-8 bg-white">
+              
+              {/* Sales Table */}
+              {selectedMonthDetails.sales.length > 0 && (
                 <div>
-                  <p className="text-xs text-gray-400">Sales</p>
-                  <p className="font-semibold text-green-600">{formatCurrency(month.totalSales)}</p>
+                  <h3 className="font-semibold text-slate-800 mb-3 flex items-center gap-2">
+                    <span className="w-2.5 h-2.5 bg-green-500 rounded-full"></span>
+                    Sales ({selectedMonthDetails.sales.length})
+                  </h3>
+                  <div className="rounded-xl border border-slate-200 overflow-hidden">
+                    <table className="w-full text-sm text-left">
+                      <thead className="bg-slate-50 text-slate-600 font-medium border-b border-slate-200">
+                        <tr>
+                          <th className="px-4 py-3">Date</th>
+                          <th className="px-4 py-3">Items</th>
+                          <th className="px-4 py-3">Customer</th>
+                          <th className="px-4 py-3">Payment</th>
+                          <th className="px-4 py-3 text-right">Amount</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-200">
+                        {selectedMonthDetails.sales.map((sale) => (
+                          <tr key={sale.id} className="hover:bg-slate-50">
+                            <td className="px-4 py-3 text-slate-800">{formatDate(sale.date)}</td>
+                            <td className="px-4 py-3 text-slate-800">{sale.items?.length ?? 0} items</td>
+                            <td className="px-4 py-3 text-slate-800">{sale.customerName ?? 'Walk-in'}</td>
+                            <td className="px-4 py-3 text-slate-800">{sale.paymentMethod}</td>
+                            <td className="px-4 py-3 text-right font-medium text-green-600">{formatCurrency(sale.totalAmount)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                      <tfoot className="bg-slate-50 font-bold border-t border-slate-200">
+                        <tr>
+                          <td colSpan={4} className="px-4 py-3 text-slate-700">Total Sales</td>
+                          <td className="px-4 py-3 text-right text-green-700">{formatCurrency(selectedMonthDetails.totalSales)}</td>
+                        </tr>
+                      </tfoot>
+                    </table>
+                  </div>
                 </div>
+              )}
+
+              {/* Purchases Table */}
+              {selectedMonthDetails.purchases.length > 0 && (
                 <div>
-                  <p className="text-xs text-gray-400">Purchases</p>
-                  <p className="font-semibold text-blue-600">{formatCurrency(month.totalPurchases)}</p>
+                  <h3 className="font-semibold text-slate-800 mb-3 flex items-center gap-2">
+                    <span className="w-2.5 h-2.5 bg-blue-500 rounded-full"></span>
+                    Purchases ({selectedMonthDetails.purchases.length})
+                  </h3>
+                  <div className="rounded-xl border border-slate-200 overflow-hidden">
+                    <table className="w-full text-sm text-left">
+                      <thead className="bg-slate-50 text-slate-600 font-medium border-b border-slate-200">
+                        <tr>
+                          <th className="px-4 py-3">Date</th>
+                          <th className="px-4 py-3">Product</th>
+                          <th className="px-4 py-3">Supplier</th>
+                          <th className="px-4 py-3">Qty</th>
+                          <th className="px-4 py-3 text-right">Total</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-200">
+                        {selectedMonthDetails.purchases.map((purchase) => (
+                          <tr key={purchase.id} className="hover:bg-slate-50">
+                            <td className="px-4 py-3 text-slate-800">{formatDate(purchase.date)}</td>
+                            <td className="px-4 py-3 text-slate-800">{purchase.productName}</td>
+                            <td className="px-4 py-3 text-slate-800">{purchase.supplier ?? 'N/A'}</td>
+                            <td className="px-4 py-3 text-slate-800">{purchase.quantity}</td>
+                            <td className="px-4 py-3 text-right font-medium text-blue-600">{formatCurrency(purchase.totalCost)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                      <tfoot className="bg-slate-50 font-bold border-t border-slate-200">
+                        <tr>
+                          <td colSpan={4} className="px-4 py-3 text-slate-700">Total Purchases</td>
+                          <td className="px-4 py-3 text-right text-blue-700">{formatCurrency(selectedMonthDetails.totalPurchases)}</td>
+                        </tr>
+                      </tfoot>
+                    </table>
+                  </div>
                 </div>
+              )}
+
+              {/* Expenses Table */}
+              {selectedMonthDetails.expenses.length > 0 && (
                 <div>
-                  <p className="text-xs text-gray-400">Expenses</p>
-                  <p className="font-semibold text-red-500">{formatCurrency(month.totalExpenses)}</p>
+                  <h3 className="font-semibold text-slate-800 mb-3 flex items-center gap-2">
+                    <span className="w-2.5 h-2.5 bg-red-500 rounded-full"></span>
+                    Expenses ({selectedMonthDetails.expenses.length})
+                  </h3>
+                  <div className="rounded-xl border border-slate-200 overflow-hidden">
+                    <table className="w-full text-sm text-left">
+                      <thead className="bg-slate-50 text-slate-600 font-medium border-b border-slate-200">
+                        <tr>
+                          <th className="px-4 py-3">Date</th>
+                          <th className="px-4 py-3">Title</th>
+                          <th className="px-4 py-3">Category</th>
+                          <th className="px-4 py-3 text-right">Amount</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-200">
+                        {selectedMonthDetails.expenses.map((expense) => (
+                          <tr key={expense.id} className="hover:bg-slate-50">
+                            <td className="px-4 py-3 text-slate-800">{formatDate(expense.date)}</td>
+                            <td className="px-4 py-3 text-slate-800">{expense.title}</td>
+                            <td className="px-4 py-3 text-slate-800">{expense.category}</td>
+                            <td className="px-4 py-3 text-right font-medium text-red-600">{formatCurrency(expense.amount)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                      <tfoot className="bg-slate-50 font-bold border-t border-slate-200">
+                        <tr>
+                          <td colSpan={3} className="px-4 py-3 text-slate-700">Total Expenses</td>
+                          <td className="px-4 py-3 text-right text-red-700">{formatCurrency(selectedMonthDetails.totalExpenses)}</td>
+                        </tr>
+                      </tfoot>
+                    </table>
+                  </div>
                 </div>
-                <div>
-                  <p className="text-xs text-gray-400">Net Profit</p>
-                  <p className={`font-bold text-lg ${month.netProfit >= 0 ? 'text-emerald-600' : 'text-orange-600'}`}>
-                    {formatCurrency(month.netProfit)}
-                  </p>
-                </div>
-                <span className="text-gray-400 text-lg">
-                  {expandedMonth === month.key ? '▲' : '▼'}
+              )}
+
+            </div>
+            
+            {/* Modal Footer / Net Summary */}
+            <div className="border-t border-slate-200 bg-slate-50 p-6">
+              <div className="flex items-center justify-between">
+                <span className="text-lg font-bold text-slate-700">Net Profit</span>
+                <span className={`text-2xl font-bold ${selectedMonthDetails.netProfit >= 0 ? 'text-emerald-600' : 'text-orange-600'}`}>
+                  {formatCurrency(selectedMonthDetails.netProfit)}
                 </span>
               </div>
-            </button>
-
-            {/* Expanded Details */}
-            {expandedMonth === month.key && (
-              <div className="border-t border-slate-200">
-
-                {/* Sales */}
-                {month.sales.length > 0 && (
-                  <div className="p-4">
-                    <h3 className="font-semibold text-sm text-gray-600 mb-3 flex items-center gap-2">
-                      <span className="w-2 h-2 bg-green-500 rounded-full"></span>
-                      Sales ({month.sales.length})
-                    </h3>
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-sm">
-                        <thead className="bg-green-50">
-                          <tr>
-                            <th className="text-left p-2 text-gray-700">Date</th>
-                            <th className="text-left p-2 text-gray-700">Items</th>
-                            <th className="text-left p-2 text-gray-700">Customer</th>
-                            <th className="text-left p-2 text-gray-700">Payment</th>
-                            <th className="text-right p-2 text-gray-700">Amount</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {month.sales.map((sale) => (
-                            <tr key={sale.id} className="border-b border-gray-100">
-                              <td className="p-2 text-gray-800">{formatDate(sale.date)}</td>
-                              <td className="p-2 text-gray-800">{sale.items?.length ?? 0} items</td>
-                              <td className="p-2 text-gray-800">{sale.customerName ?? 'Walk-in'}</td>
-                              <td className="p-2 text-gray-800">{sale.paymentMethod}</td>
-                              <td className="p-2 text-right font-medium text-green-600">
-                                {formatCurrency(sale.totalAmount)}
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                        <tfoot className="font-bold bg-green-50">
-                          <tr>
-                            <td colSpan={4} className="p-2 text-gray-700">Month Total</td>
-                            <td className="p-2 text-right text-green-700">
-                              {formatCurrency(month.totalSales)}
-                            </td>
-                          </tr>
-                        </tfoot>
-                      </table>
-                    </div>
-                  </div>
-                )}
-
-                {/* Purchases */}
-                {month.purchases.length > 0 && (
-                  <div className="p-4 border-t border-slate-200">
-                    <h3 className="font-semibold text-sm text-gray-600 mb-3 flex items-center gap-2">
-                      <span className="w-2 h-2 bg-blue-500 rounded-full"></span>
-                      Purchases ({month.purchases.length})
-                    </h3>
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-sm">
-                        <thead className="bg-blue-50">
-                          <tr>
-                            <th className="text-left p-2 text-gray-700">Date</th>
-                            <th className="text-left p-2 text-gray-700">Product</th>
-                            <th className="text-left p-2 text-gray-700">Supplier</th>
-                            <th className="text-left p-2 text-gray-700">Qty</th>
-                            <th className="text-right p-2 text-gray-700">Total</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {month.purchases.map((purchase) => (
-                            <tr key={purchase.id} className="border-b border-gray-100">
-                              <td className="p-2 text-gray-800">{formatDate(purchase.date)}</td>
-                              <td className="p-2 text-gray-800">{purchase.productName}</td>
-                              <td className="p-2 text-gray-800">{purchase.supplier ?? 'N/A'}</td>
-                              <td className="p-2 text-gray-800">{purchase.quantity}</td>
-                              <td className="p-2 text-right font-medium text-blue-600">
-                                {formatCurrency(purchase.totalCost)}
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                        <tfoot className="font-bold bg-blue-50">
-                          <tr>
-                            <td colSpan={4} className="p-2 text-gray-700">Month Total</td>
-                            <td className="p-2 text-right text-blue-700">
-                              {formatCurrency(month.totalPurchases)}
-                            </td>
-                          </tr>
-                        </tfoot>
-                      </table>
-                    </div>
-                  </div>
-                )}
-
-                {/* Expenses */}
-                {month.expenses.length > 0 && (
-                  <div className="p-4 border-t border-slate-200">
-                    <h3 className="font-semibold text-sm text-gray-600 mb-3 flex items-center gap-2">
-                      <span className="w-2 h-2 bg-red-500 rounded-full"></span>
-                      Expenses ({month.expenses.length})
-                    </h3>
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-sm">
-                        <thead className="bg-red-50">
-                          <tr>
-                            <th className="text-left p-2">Date</th>
-                            <th className="text-left p-2">Title</th>
-                            <th className="text-left p-2">Category</th>
-                            <th className="text-right p-2">Amount</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {month.expenses.map((expense) => (
-                            <tr key={expense.id} className="border-b border-gray-100">
-                              <td className="p-2">{formatDate(expense.date)}</td>
-                              <td className="p-2">{expense.title}</td>
-                              <td className="p-2">{expense.category}</td>
-                              <td className="p-2 text-right font-medium text-red-600">
-                                {formatCurrency(expense.amount)}
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                        <tfoot className="font-bold bg-red-50">
-                          <tr>
-                            <td colSpan={3} className="p-2">Month Total</td>
-                            <td className="p-2 text-right text-red-700">
-                              {formatCurrency(month.totalExpenses)}
-                            </td>
-                          </tr>
-                        </tfoot>
-                      </table>
-                    </div>
-                  </div>
-                )}
-
-                {/* Month Net Summary */}
-                <div className="p-4 border-t bg-gray-50">
-                  <div className="flex justify-between items-center">
-                    <span className="font-bold text-gray-700">
-                      {month.monthName} — Net Profit
-                    </span>
-                    <span className={`text-xl font-bold ${
-                      month.netProfit >= 0 ? 'text-emerald-600' : 'text-orange-600'
-                    }`}>
-                      {formatCurrency(month.netProfit)}
-                    </span>
-                  </div>
-                </div>
-
-              </div>
-            )}
+            </div>
           </div>
-        ))}
-
-        {(!metrics?.monthSummaries || metrics.monthSummaries.length === 0) && (
-          <div className="bg-white rounded-xl border p-12 text-center">
-            <p className="text-4xl mb-3">📅</p>
-            <p className="text-gray-500">No records found yet.</p>
-            <p className="text-gray-400 text-sm">Start adding sales, purchases and expenses.</p>
-          </div>
-        )}
-      </div>
-      </div>
-
+        </div>
+      )}
       {/* Hidden Monthly Report for Printing — Always Expanded */}
       <div ref={printRef} className="print-source">
         <style dangerouslySetInnerHTML={{ __html:
@@ -365,7 +456,7 @@ export default function MonthlyRecords() {
         }} />
         <div style={{ padding: '20px' }}>
           <div className="report-header">
-            <h1>{settings?.shopName || 'Pharmacy ERP'}</h1>
+            <h1>{settings?.shopName || 'Shop ERP'}</h1>
             {settings?.address && <p>{settings.address}</p>}
             {settings?.phone && <p>Ph: {settings.phone}</p>}
             <h2 style={{ marginTop: '15px', textTransform: 'uppercase', letterSpacing: '1px' }}>Monthly Business Records</h2>

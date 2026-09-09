@@ -5,8 +5,8 @@
  * 
  * OVERVIEW:
  * This module manages IndexedDB database initialization using Dexie.js
- * The application uses a single database for Pharmacy operations:
- * - pharmacyDB: Pharmacy / Medical store business
+ * The application uses a single database for Business operations:
+ * - appDB: Business / Medical store business
  * 
  * ARCHITECTURE:
  * - IndexedDB for robust offline-first data storage
@@ -150,34 +150,138 @@ export class ShopDatabase extends Dexie {
       priceHistory: '++id, productId, type, date',
       settings: 'key',
     });
+
+    // VERSION 5: Add supplierLedger and supplierId to purchases
+    this.version(5).stores({
+      products: '++id, name, category, barcode, price, costPrice, unit, createdAt, expiryDate',
+      inventory: '++id, productId, quantity, lowStockThreshold, lastUpdated, expiryDate',
+      purchases: '++id, productId, productName, quantity, costPrice, totalCost, supplier, supplierId, date, expiryDate',
+      sales: '++id, date, totalAmount, discount, paymentMethod, customerId',
+      suppliers: '++id, name, phone, email, address, createdAt',
+      customers: '++id, name, phone, email',
+      expenses: '++id, title, amount, category, date',
+      salesReturns: '++id, originalSaleId, productId, productName, quantity, refundAmount, reason, refundMethod, customerId, date',
+      customerLedger: '++id, customerId, type, amount, description, date',
+      supplierLedger: '++id, supplierId, type, amount, description, date',
+      priceHistory: '++id, productId, type, date',
+      settings: 'key',
+    });
+
+    // VERSION 6: Batch System
+    this.version(6).stores({
+      products: '++id, name, category, barcode, price, costPrice, unit, createdAt, expiryDate',
+      inventory: '++id, productId, quantity, lowStockThreshold, lastUpdated, expiryDate',
+      productBatches: '++id, productId, batchNumber, quantity, costPrice, expiryDate, createdAt',
+      purchases: '++id, productId, productName, quantity, costPrice, totalCost, supplier, supplierId, date, expiryDate, batchNumber',
+      sales: '++id, date, totalAmount, discount, paymentMethod, customerId',
+      suppliers: '++id, name, phone, email, address, createdAt',
+      customers: '++id, name, phone, email',
+      expenses: '++id, title, amount, category, date',
+      salesReturns: '++id, originalSaleId, productId, productName, quantity, refundAmount, reason, refundMethod, customerId, date',
+      customerLedger: '++id, customerId, type, amount, description, date',
+      supplierLedger: '++id, supplierId, type, amount, description, date',
+      priceHistory: '++id, productId, type, date',
+      settings: 'key',
+    }).upgrade(async trans => {
+      // Migrate existing inventory into productBatches so old stock is preserved as a batch
+      const inventories = await trans.inventory.toArray();
+      const batches = [];
+      for (const inv of inventories) {
+        if (inv.quantity > 0) {
+          batches.push({
+            productId: inv.productId,
+            batchNumber: `INITIAL-${inv.productId}`,
+            quantity: inv.quantity,
+            costPrice: 0, // Will be updated by future purchases or can be left 0
+            expiryDate: inv.expiryDate || null,
+            createdAt: new Date().toISOString()
+          });
+        }
+      }
+      if (batches.length > 0) {
+        await trans.productBatches.bulkAdd(batches);
+      }
+    });
+
+    // VERSION 7: Custom Categories
+    this.version(7).stores({
+      products: '++id, name, category, barcode, price, costPrice, unit, createdAt, expiryDate',
+      inventory: '++id, productId, quantity, lowStockThreshold, lastUpdated, expiryDate',
+      productBatches: '++id, productId, batchNumber, quantity, costPrice, expiryDate, createdAt',
+      purchases: '++id, productId, productName, quantity, costPrice, totalCost, supplier, supplierId, date, expiryDate, batchNumber',
+      sales: '++id, date, totalAmount, discount, paymentMethod, customerId',
+      suppliers: '++id, name, phone, email, address, createdAt',
+      customers: '++id, name, phone, email',
+      expenses: '++id, title, amount, category, date',
+      salesReturns: '++id, originalSaleId, productId, productName, quantity, refundAmount, reason, refundMethod, customerId, date',
+      customerLedger: '++id, customerId, type, amount, description, date',
+      supplierLedger: '++id, supplierId, type, amount, description, date',
+      priceHistory: '++id, productId, type, date',
+      settings: 'key',
+      categories: '++id, name, createdAt', // NEW TABLE
+    });
+    // VERSION 8: Enhanced Categories (Hierarchy)
+    this.version(8).stores({
+      products: '++id, name, category, barcode, price, costPrice, unit, createdAt, expiryDate',
+      inventory: '++id, productId, quantity, lowStockThreshold, lastUpdated, expiryDate',
+      productBatches: '++id, productId, batchNumber, quantity, costPrice, expiryDate, createdAt',
+      purchases: '++id, productId, productName, quantity, costPrice, totalCost, supplier, supplierId, date, expiryDate, batchNumber',
+      sales: '++id, date, totalAmount, discount, paymentMethod, customerId',
+      suppliers: '++id, name, phone, email, address, createdAt',
+      customers: '++id, name, phone, email',
+      expenses: '++id, title, amount, category, date',
+      salesReturns: '++id, originalSaleId, productId, productName, quantity, refundAmount, reason, refundMethod, customerId, date',
+      customerLedger: '++id, customerId, type, amount, description, date',
+      supplierLedger: '++id, supplierId, type, amount, description, date',
+      priceHistory: '++id, productId, type, date',
+      settings: 'key',
+      categories: '++id, name, parentId, status, createdAt, updatedAt', // ENHANCED TABLE
+    });
+    // VERSION 9: Wholesale Pricing
+    this.version(9).stores({
+      products: '++id, name, category, barcode, price, wholesalePrice, costPrice, unit, createdAt, expiryDate',
+      inventory: '++id, productId, quantity, lowStockThreshold, lastUpdated, expiryDate',
+      productBatches: '++id, productId, batchNumber, quantity, costPrice, expiryDate, createdAt',
+      purchases: '++id, productId, productName, quantity, costPrice, totalCost, supplier, supplierId, date, expiryDate, batchNumber',
+      sales: '++id, date, totalAmount, discount, paymentMethod, customerId',
+      suppliers: '++id, name, phone, email, address, createdAt',
+      customers: '++id, name, phone, email',
+      expenses: '++id, title, amount, category, date',
+      salesReturns: '++id, originalSaleId, productId, productName, quantity, refundAmount, reason, refundMethod, customerId, date',
+      customerLedger: '++id, customerId, type, amount, description, date',
+      supplierLedger: '++id, supplierId, type, amount, description, date',
+      priceHistory: '++id, productId, type, date',
+      settings: 'key',
+      categories: '++id, name, parentId, status, createdAt, updatedAt',
+    });
   }
 }
 
 // ============================================
 // DATABASE INSTANCES
 // ============================================
-// Single IndexedDB database for Pharmacy operations
-export const pharmacyDB = new ShopDatabase('ShopERP_Pharmacy');
+// Single IndexedDB database for Business operations
+export const appDB = new ShopDatabase('ShopERP_Database');
 
 // Active database reference
-export let db = pharmacyDB;
+export let db = appDB;
 
 // ============================================
 // DATABASE ACCESS FUNCTIONS
 // ============================================
 /**
  * Get the database instance
- * @returns {ShopDatabase} The pharmacy database instance
+ * @returns {ShopDatabase} The business database instance
  */
 export const getDB = () => {
-  return pharmacyDB;
+  return appDB;
 };
 
 /**
  * Set the active database (kept for compatibility)
  */
 export const setDB = () => {
-  db = pharmacyDB;
+  db = appDB;
 };
 
 /**
@@ -231,9 +335,9 @@ async function initializeDefaultSettings(targetDB) {
   const settingsCount = await targetDB.settings.count();
   
   if (settingsCount === 0) {
-    // Set defaults for Pharmacy
+    // Set defaults for Business
     const businessDefaults = {
-      shopName: 'General Store',
+      shopName: 'Business Management System',
       currency: 'Rs',
       address: '',
       phone: '',
@@ -247,7 +351,7 @@ async function initializeDefaultSettings(targetDB) {
         targetDB.settings.put({ key: 'phone', value: businessDefaults.phone }),
       ]);
     } catch (error) {
-      console.warn(`Failed to initialize default settings for Pharmacy:`, error);
+      console.warn(`Failed to initialize default settings for Business:`, error);
     }
   }
 }
@@ -267,7 +371,7 @@ async function initializeDefaultSettings(targetDB) {
  * @returns {Promise<Dexie>} The opened database instance
  */
 export async function initDB() {
-  const targetDB = pharmacyDB;
+  const targetDB = appDB;
   await safeOpenDB(targetDB);
   await deduplicateProducts(targetDB);
   await initializeDefaultSettings(targetDB);
@@ -275,7 +379,7 @@ export async function initDB() {
 }
 
 export async function initDBWithSeed() {
-  const targetDB = pharmacyDB;
+  const targetDB = appDB;
   await safeOpenDB(targetDB);
   await deduplicateProducts(targetDB);
   await initializeDefaultSettings(targetDB);
@@ -284,7 +388,7 @@ export async function initDBWithSeed() {
     try {
       await seedDatabase(targetDB);
     } catch (error) {
-      console.error(`Seeding failed for Pharmacy database:`, error);
+      console.error(`Seeding failed for Business database:`, error);
       // If seeding fails due to constraint errors, try force reinit
       if (error.name === 'ConstraintError') {
         console.warn(`ConstraintError during seeding, clearing and retrying...`);
@@ -308,7 +412,7 @@ export async function initDBWithSeed() {
  * @returns {Promise<Dexie>} Reinitialized database
  */
 export async function forceInitDB() {
-  const targetDB = pharmacyDB;
+  const targetDB = appDB;
   await safeOpenDB(targetDB);
   
   // Clear all tables
@@ -323,8 +427,11 @@ export async function forceInitDB() {
   await targetDB.customers.clear();
   await targetDB.customerLedger.clear();
   await targetDB.priceHistory.clear();
+  await targetDB.supplierLedger.clear();
+  await targetDB.productBatches.clear();
+  await targetDB.categories.clear();
   
-  // Re-seed with pharmacy data
+  // Re-seed with business data
   await seedDatabase(targetDB);
   
   return targetDB;
@@ -352,7 +459,7 @@ export async function initAllDBs() {
  * @param {Dexie} targetDB - Database to deduplicate
  * @returns {Promise<void>}
  */
-export async function deduplicateProducts(targetDB = pharmacyDB) {
+export async function deduplicateProducts(targetDB = appDB) {
   const allProducts = await targetDB.products.toArray();
   const seen = new Map();
   const toDelete = [];
@@ -401,7 +508,7 @@ export async function deduplicateProducts(targetDB = pharmacyDB) {
  * @param {Dexie} targetDB - Database to export (default: generalDB)
  * @returns {Promise<Object>} JSON object with all table data
  */
-export async function exportDatabase(targetDB = pharmacyDB) {
+export async function exportDatabase(targetDB = appDB) {
   const [products, inventory, purchases, sales, suppliers, expenses, salesReturns, settings, customers, customerLedger] = await Promise.all([
     targetDB.products.toArray(),
     targetDB.inventory.toArray(),
@@ -436,7 +543,7 @@ export async function exportDatabase(targetDB = pharmacyDB) {
  */
 export async function exportAllDatabases() {
   return {
-    pharmacy: await exportDatabase(pharmacyDB),
+    business: await exportDatabase(appDB),
   };
 }
 
@@ -465,7 +572,7 @@ export { initDB as initDb };
  * @returns {Promise<boolean>} True if reset successful
  */
 export async function resetDatabase() {
-  const targetDB = pharmacyDB;
+  const targetDB = appDB;
   await safeOpenDB(targetDB);
   
   // Clear all tables
@@ -480,8 +587,11 @@ export async function resetDatabase() {
   await targetDB.customers.clear();
   await targetDB.customerLedger.clear();
   await targetDB.priceHistory.clear();
+  await targetDB.supplierLedger.clear();
+  await targetDB.productBatches.clear();
+  await targetDB.categories.clear();
   
-  console.log(`Pharmacy database cleared - all data deleted. User must add data manually.`);
+  console.log(`Business database cleared - all data deleted. User must add data manually.`);
   
   return true;
 }

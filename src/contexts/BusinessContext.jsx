@@ -2,10 +2,10 @@ import { createContext, useContext, useState, useEffect, useCallback } from 'rea
 import { getDB, initDB, initDBWithSeed, initAllDBs } from '@/lib/db';
 
 export const BusinessContext = createContext({
-  activeBusiness: 'pharmacy',
+  activeBusiness: 'business',
   switchBusiness: () => {},
-  db: getDB('pharmacy'),
-  businessName: 'Pharmacy Store',
+  db: getDB('business'),
+  businessName: 'Business Management System',
   businessIcon: '💊',
   businessColor: 'emerald',
   bgColor: 'bg-emerald-600',
@@ -17,8 +17,8 @@ export const BusinessContext = createContext({
 });
 
 export const businessConfig = {
-  pharmacy: {
-    name: 'General Store',
+  business: {
+    name: 'Business Management System',
     icon: '💊',
     color: 'emerald',
     bgColor: 'bg-emerald-600',
@@ -35,26 +35,20 @@ export const businessConfig = {
 };
 
 export const BusinessProvider = ({ children }) => {
-  const [activeBusiness, setActiveBusiness] = useState('pharmacy');
+  const [activeBusiness, setActiveBusiness] = useState('business');
   const [mounted, setMounted] = useState(false);
   const [isInitialized, setIsInitialized] = useState(false);
 
-  // Initialize pharmacy database on mount
+  // Initialize business database on mount
   useEffect(() => {
     const initializeDatabases = async () => {
       try {
         const isDev = import.meta.env.DEV;
-        console.log(`Initializing Pharmacy database (${isDev ? 'development' : 'production'} mode)...`);
+        console.log(`Initializing Business database (${isDev ? 'development' : 'production'} mode)...`);
         
-        if (isDev) {
-          // In development: load demo data for testing
-          await initDBWithSeed('pharmacy');
-        } else {
-          // In production: keep databases empty
-          await initDB('pharmacy');
-        }
+        await initDB('business');
         
-        console.log('Pharmacy database ready.');
+        console.log('Business database ready.');
         setIsInitialized(true);
       } catch (error) {
         console.error('Failed to initialize database:', error);
@@ -74,7 +68,7 @@ export const BusinessProvider = ({ children }) => {
     const isDev = import.meta.env.DEV;
     
     if (isDev && (await getDB(business).products.count()) === 0) {
-      await initDBWithSeed(business);
+      await initDB(business);
     } else {
       await initDB(business);
     }
@@ -86,10 +80,10 @@ export const BusinessProvider = ({ children }) => {
   if (!mounted) {
     return (
       <BusinessContext.Provider value={{
-        activeBusiness: 'pharmacy',
+        activeBusiness: 'business',
         switchBusiness,
-        db: getDB('pharmacy'),
-        businessName: 'Pharmacy Store',
+        db: getDB('business'),
+        businessName: 'Business Management System',
         businessIcon: '💊',
         businessColor: 'emerald',
         bgColor: 'bg-emerald-600',

@@ -83,14 +83,14 @@ const demoExpenses = [
 ];
 
 const demoSettings = [
-  { key: 'shopName', value: 'Pharmacy Store' },
+  { key: 'shopName', value: 'Business Management System' },
   { key: 'currency', value: 'Rs' },
 ];
 // ============================================
-// CATEGORY COLORS - Pharmacy
+// CATEGORY COLORS - Business
 // ============================================
 export const categoryColors = {
-  pharmacy: {
+  business: {
     Analgesics: '#10b981',
     Antibiotics: '#059669',
     Syrups: '#34d399',
@@ -149,7 +149,7 @@ export async function seedDatabase(targetDB) {
     // Add customers
     await targetDB.customers.bulkAdd(demoCustomers);
 
-    console.log('Demo data loaded successfully for development (Pharmacy business)');
+    console.log('Demo data loaded successfully for development (Business business)');
   } catch (error) {
     console.error('Failed to seed demo data:', error);
   }

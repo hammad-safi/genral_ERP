@@ -4,6 +4,7 @@ import { Plus, Printer, Phone, ArrowLeft } from 'lucide-react';
 import { useReactToPrint } from 'react-to-print';
 import PageHeader from '@/components/PageHeader';
 import { initDB, getDB } from '@/lib/db';
+import { clearPaginationCache } from '@/hooks/useDexiePagination';
 import { formatCurrency, formatDate, removeLeadingZeros } from '@/lib/utils';
 import { useSettings } from '@/hooks/useSettings';
 import { useBusiness } from '@/contexts/BusinessContext';
@@ -64,7 +65,7 @@ export default function CustomerDetail() {
     return (
       <div className="space-y-6">
         <PageHeader title="Customer Khata" description="Account details" />
-        <div className="text-center py-8 text-gray-500">Customer not found</div>
+        <div className="text-center py-8 text-slate-500">Customer not found</div>
       </div>
     );
   }
@@ -77,7 +78,7 @@ export default function CustomerDetail() {
         action={
           <button
             onClick={() => navigate('/customers')}
-            className="inline-flex items-center gap-2 text-sm text-gray-600 hover:text-gray-900"
+            className="inline-flex items-center gap-2 text-sm text-slate-600 hover:text-slate-900"
           >
             <ArrowLeft className="h-4 w-4" />
             Back to Customers
@@ -85,23 +86,23 @@ export default function CustomerDetail() {
         }
       />
 
-      <div className="bg-white rounded-lg shadow p-6">
+      <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6">
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
           <div>
-            <p className="text-sm text-gray-500">Name</p>
+            <p className="text-sm text-slate-500">Name</p>
             <p className="font-semibold text-slate-900">{customer.name}</p>
           </div>
           <div>
-            <p className="text-sm text-gray-500">Phone</p>
+            <p className="text-sm text-slate-500">Phone</p>
             <p className="font-semibold text-slate-900">{customer.phone}</p>
           </div>
           <div>
-            <p className="text-sm text-gray-500">Email</p>
+            <p className="text-sm text-slate-500">Email</p>
             <p className="font-semibold text-slate-900">{customer.email || '-'}</p>
           </div>
           {customer.address && (
             <div>
-              <p className="text-sm text-gray-500">Address</p>
+              <p className="text-sm text-slate-500">Address</p>
               <p className="font-semibold text-slate-900">{customer.address}</p>
             </div>
           )}
@@ -120,19 +121,19 @@ export default function CustomerDetail() {
         </div>
       </div>
 
-      <div className="bg-white rounded-lg shadow p-6">
+      <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6">
         <h3 className="text-lg font-semibold mb-4 text-slate-900">💰 Account Summary</h3>
-        <div className="grid grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           <div className="text-center">
-            <p className="text-sm text-gray-500">Total Charged</p>
+            <p className="text-sm text-slate-500">Total Charged</p>
             <p className="text-2xl font-bold text-red-600">{formatCurrency(balance.totalCharged, currency)}</p>
           </div>
           <div className="text-center">
-            <p className="text-sm text-gray-500">Total Paid</p>
+            <p className="text-sm text-slate-500">Total Paid</p>
             <p className="text-2xl font-bold text-green-600">{formatCurrency(balance.totalPaid, currency)}</p>
           </div>
           <div className="text-center">
-            <p className="text-sm text-gray-500">Balance Left</p>
+            <p className="text-sm text-slate-500">Balance Left</p>
             <p className={`text-2xl font-bold ${balance.balance > 0 ? 'text-red-600' : 'text-green-600'}`}>
               {formatCurrency(balance.balance, currency)}
             </p>
@@ -140,13 +141,13 @@ export default function CustomerDetail() {
         </div>
       </div>
 
-      <div className="bg-white rounded-lg shadow p-6">
+      <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6">
         <h3 className="text-lg font-semibold mb-4 text-slate-900">📋 Transaction History</h3>
 
         <div className="overflow-x-auto overflow-y-auto max-h-[58vh] rounded-xl border border-slate-200">
           <table className="w-full">
             <thead>
-              <tr className="border-b border-slate-200 bg-gray-50">
+              <tr className="border-b border-slate-200 bg-slate-50">
                 <th className="text-left py-2 text-slate-900">Date</th>
                 <th className="text-left py-2 text-slate-900">Description</th>
                 <th className="text-right py-2 text-slate-900">DR</th>
@@ -155,7 +156,7 @@ export default function CustomerDetail() {
             </thead>
             <tbody>
               {ledger.map((entry) => (
-                <tr key={entry.id} className="border-b border-slate-200 hover:bg-gray-50">
+                <tr key={entry.id} className="border-b border-slate-200 hover:bg-slate-50">
                   <td className="py-2 text-slate-900">{formatDate(entry.date)}</td>
                   <td className="py-2 text-slate-900">{entry.description}</td>
                   <td className="text-right py-2 text-slate-900">
@@ -207,6 +208,7 @@ export default function CustomerDetail() {
           onClose={() => setChargeModalOpen(false)}
           onSave={() => {
             setChargeModalOpen(false);
+            clearPaginationCache('customers');
             loadCustomerData();
           }}
         />
@@ -218,6 +220,7 @@ export default function CustomerDetail() {
           onClose={() => setPaymentModalOpen(false)}
           onSave={() => {
             setPaymentModalOpen(false);
+            clearPaginationCache('customers');
             loadCustomerData();
           }}
         />
@@ -226,12 +229,12 @@ export default function CustomerDetail() {
       {/* Hidden Printable Content */}
       <div ref={printRef} className="print-source p-8">
         <div className="text-center border-b-2 border-black pb-4 mb-4">
-          <p className="text-2xl font-bold">Pharmacy Store ERP</p>
+          <p className="text-2xl font-bold">{settings?.shopName || 'Shop ERP'}</p>
           <p className="text-lg">Customer Account Statement</p>
-          <p className="text-sm text-gray-600">Date: {new Date().toLocaleDateString()}</p>
+          <p className="text-sm text-slate-600">Date: {new Date().toLocaleDateString()}</p>
         </div>
 
-        <div className="mb-6 p-4 bg-gray-100">
+        <div className="mb-6 p-4 bg-slate-100">
           <div className="flex justify-between mb-2">
             <span><b>Customer Name:</b> {customer?.name}</span>
             <span><b>Phone:</b> {customer?.phone}</span>
@@ -271,7 +274,7 @@ export default function CustomerDetail() {
           </tbody>
         </table>
 
-        <div className="mt-6 text-center text-xs text-gray-600">
+        <div className="mt-6 text-center text-xs text-slate-600">
           <p>Total Charged: {currency} {balance.totalCharged.toFixed(2)} | Total Paid: {currency} {balance.totalPaid.toFixed(2)} | Balance: {currency} {balance.balance.toFixed(2)}</p>
           <p className="mt-2">Thank you!</p>
         </div>
@@ -301,12 +304,12 @@ function ChargeModal({ customerId, onClose, onSave }) {
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 p-4">
-      <div className="bg-white rounded-lg p-6 w-full max-w-md">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4">
+      <div className="bg-white rounded-2xl p-6 w-full max-w-md">
         <h2 className="text-xl font-bold mb-4">Add Charge</h2>
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
-            <label className="block text-sm font-medium text-gray-700">Amount ({currency}) *</label>
+            <label className="block text-sm font-medium text-slate-700">Amount ({currency}) *</label>
             <input
               type="text"
               inputMode="decimal"
@@ -322,7 +325,7 @@ function ChargeModal({ customerId, onClose, onSave }) {
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-gray-700">Description</label>
+            <label className="block text-sm font-medium text-slate-700">Description</label>
             <input
               type="text"
               value={description}
@@ -336,7 +339,7 @@ function ChargeModal({ customerId, onClose, onSave }) {
             <button
               type="button"
               onClick={onClose}
-              className="flex-1 bg-gray-200 text-gray-800 px-4 py-2 rounded-lg hover:bg-gray-300"
+              className="flex-1 bg-slate-200 text-slate-800 px-4 py-2 rounded-lg hover:bg-slate-300"
             >
               Cancel
             </button>
@@ -374,12 +377,12 @@ function PaymentModal({ customerId, onClose, onSave }) {
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 p-4">
-      <div className="bg-white rounded-lg p-6 w-full max-w-md">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4">
+      <div className="bg-white rounded-2xl p-6 w-full max-w-md">
         <h2 className="text-xl font-bold mb-4">Record Payment</h2>
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
-            <label className="block text-sm font-medium text-gray-700">Amount ({currency}) *</label>
+            <label className="block text-sm font-medium text-slate-700">Amount ({currency}) *</label>
             <input
               type="text"
               inputMode="decimal"
@@ -395,7 +398,7 @@ function PaymentModal({ customerId, onClose, onSave }) {
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-gray-700">Note</label>
+            <label className="block text-sm font-medium text-slate-700">Note</label>
             <input
               type="text"
               value={note}
@@ -409,7 +412,7 @@ function PaymentModal({ customerId, onClose, onSave }) {
             <button
               type="button"
               onClick={onClose}
-              className="flex-1 bg-gray-200 text-gray-800 px-4 py-2 rounded-lg hover:bg-gray-300"
+              className="flex-1 bg-slate-200 text-slate-800 px-4 py-2 rounded-lg hover:bg-slate-300"
             >
               Cancel
             </button>

@@ -1,5 +1,9 @@
 import { useEffect, useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
+import { 
+  Banknote, TrendingUp, ShoppingBag, Wallet, 
+  AlertTriangle, PackageX, Package, Users, CreditCard 
+} from 'lucide-react';
 import PageHeader from '@/components/PageHeader';
 import StatsCard from '@/components/StatsCard';
 import DashboardCharts from '@/components/DashboardCharts';
@@ -16,7 +20,7 @@ export default function Dashboard() {
   const settings = useSettings();
   const currency = settings?.currency ?? 'Rs';
   const db = getDB();
-  const bizCategoryColors = categoryColors.pharmacy;
+  const bizCategoryColors = categoryColors.business;
 
   const parseDate = (value) => {
     try {
@@ -31,17 +35,12 @@ export default function Dashboard() {
     const cleanupInvalidSaleDates = async () => {
       await initDB();
       const currentDB = getDB();
-      const sales = await currentDB.sales.toArray();
-      const invalidSales = sales.filter((sale) => {
-        const date = parseDate(sale.date);
-        return date === null;
-      });
-      if (invalidSales.length > 0) {
-        await Promise.all(
-          invalidSales.map((sale) =>
-            sale.id ? currentDB.sales.update(sale.id, { date: new Date().toISOString() }) : Promise.resolve(0)
-          )
-        );
+      try {
+        await currentDB.sales.filter((sale) => parseDate(sale.date) === null).modify((sale) => {
+          sale.date = new Date().toISOString();
+        });
+      } catch (e) {
+        console.error("Cleanup dates error", e);
       }
     };
     cleanupInvalidSaleDates();
@@ -83,10 +82,28 @@ export default function Dashboard() {
 
   // Loading and error fallback
   if (loadingError) {
-    return <div style={{ padding: 32, color: 'red', textAlign: 'center' }}>Error loading dashboard data: {loadingError}</div>;
+    return (
+      <div className="space-y-6">
+        <PageHeader title="Dashboard" description="Revenue overview and live inventory insights" />
+        <div className="rounded-xl bg-red-50 p-4 border border-red-200 text-red-700">Error loading dashboard data: {loadingError}</div>
+      </div>
+    );
   }
   if (!metrics) {
-    return <div style={{ padding: 32, textAlign: 'center' }}>Loading dashboard metrics...</div>;
+    return (
+      <div className="space-y-6">
+        <PageHeader title="Dashboard" description="Revenue overview and live inventory insights" />
+        <div className="grid gap-4 md:grid-cols-3">
+          {[...Array(9)].map((_, i) => (
+            <div key={i} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm animate-pulse">
+              <div className="h-4 w-24 bg-slate-200 rounded mb-4"></div>
+              <div className="h-8 w-32 bg-slate-200 rounded mb-2"></div>
+              <div className="h-4 w-40 bg-slate-100 rounded"></div>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
   }
 
   const {
@@ -107,6 +124,9 @@ export default function Dashboard() {
     recentTransactions = [],
     totalPeopleBalance = 0,
     peopleWithBalance = 0,
+    totalSupplierBalance = 0,
+    suppliersWithBalance = 0,
+    topSellingProducts = [],
   } = metrics;
 
   const peopleLabel = 'Customer Balances';
@@ -117,17 +137,18 @@ export default function Dashboard() {
 
       <PageHeader title="Dashboard" description="Revenue overview and live inventory insights" />
       <div className="grid gap-4 md:grid-cols-3">
-        <StatsCard title="Sales Today" value={formatCurrency(todaySalesTotal, currency)} description={`${todaySalesCount} transaction(s)`} />
-        <StatsCard title="Sales This Month" value={formatCurrency(thisMonthSalesTotal, currency)} description={`${thisMonthSalesCount} sales recorded`} />
-        <StatsCard title="Purchases This Month" value={formatCurrency(thisMonthPurchasesTotal, currency)} description={`${thisMonthPurchasesCount} restocks`} />
-        <StatsCard title="Net Profit" value={formatCurrency(netProfitThisMonth, currency)} description="Revenue minus cost and expenses" />
-        <StatsCard title="Low Stock" value={`${lowStockCount}`} description="Items below threshold" />
-        <StatsCard title="Out of Stock" value={`${outOfStockCount}`} description="Previously stocked, now empty" />
-        <StatsCard title="Total Products" value={`${totalProductsCount}`} description="Active product SKUs" />
-        <StatsCard title={peopleLabel} value={formatCurrency(totalPeopleBalance, currency)} description={`${peopleWithBalance} ${peopleOweLabel}`} />
+        <StatsCard title="Sales Today" value={formatCurrency(todaySalesTotal, currency)} description={`${todaySalesCount} transaction(s)`} type="positive" icon={Banknote} />
+        <StatsCard title="Sales This Month" value={formatCurrency(thisMonthSalesTotal, currency)} description={`${thisMonthSalesCount} sales recorded`} type="positive" icon={TrendingUp} />
+        <StatsCard title="Purchases This Month" value={formatCurrency(thisMonthPurchasesTotal, currency)} description={`${thisMonthPurchasesCount} restocks`} type="neutral" icon={ShoppingBag} />
+        <StatsCard title="Net Profit" value={formatCurrency(netProfitThisMonth, currency)} description="Revenue minus cost and expenses" type={netProfitThisMonth >= 0 ? "positive" : "negative"} icon={Wallet} />
+        <StatsCard title="Low Stock" value={`${lowStockCount}`} description="Items below threshold" type={lowStockCount > 0 ? "negative" : "neutral"} icon={AlertTriangle} />
+        <StatsCard title="Out of Stock" value={`${outOfStockCount}`} description="Previously stocked, now empty" type={outOfStockCount > 0 ? "negative" : "neutral"} icon={PackageX} />
+        <StatsCard title="Total Products" value={`${totalProductsCount}`} description="Active product SKUs" type="neutral" icon={Package} />
+        <StatsCard title={peopleLabel} value={formatCurrency(totalPeopleBalance, currency)} description={`${peopleWithBalance} ${peopleOweLabel}`} type={totalPeopleBalance > 0 ? "positive" : "neutral"} icon={Users} />
+        <StatsCard title="Total Payable" value={formatCurrency(totalSupplierBalance, currency)} description={`${suppliersWithBalance} suppliers you owe`} type={totalSupplierBalance > 0 ? "negative" : "neutral"} icon={CreditCard} />
       </div>
 
-      <DashboardCharts lineData={lineData} barData={barData} pieData={pieData} recentTransactions={recentTransactions} currency={currency} />
+      <DashboardCharts lineData={lineData} barData={barData} pieData={pieData} recentTransactions={recentTransactions} topSellingProducts={topSellingProducts} currency={currency} />
 
     </div>
   );

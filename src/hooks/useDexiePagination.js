@@ -142,6 +142,7 @@ export function useDexiePagination(queryBuilder, deps = [], pageSize = 20, trans
     if (forceClearCache && activeCacheKey) {
       paginationCache.delete(activeCacheKey);
     }
+    setData([]); // Instantly clear UI to prevent stale data
     setPage(0);
     setHasMore(true);
     setRefreshTrigger(prev => prev + 1);
@@ -155,5 +156,73 @@ export function useDexiePagination(queryBuilder, deps = [], pageSize = 20, trans
     refresh, 
     setData,
     totalCount
+  };
+}
+
+/**
+ * A hook to perform Database-Level Page-based Pagination with Dexie.
+ * 
+ * @param {Function} queryBuilder - A function receiving the Dexie DB instance and returning a Dexie Collection or Table
+ * @param {Array} deps - Dependencies that trigger a total count refresh
+ * @param {number} page - Current page (1-indexed)
+ * @param {number} limit - Number of items to fetch per page
+ * @param {Function} transformChunk - Optional async function to transform the chunk
+ */
+export function useDexieOffsetPagination(queryBuilder, deps = [], page = 1, limit = 20, transformChunk = null) {
+  const [data, setData] = useState([]);
+  const [totalCount, setTotalCount] = useState(0);
+  const [isLoading, setIsLoading] = useState(true);
+  const [refreshTrigger, setRefreshTrigger] = useState(0);
+
+  // 1. Fetch total count when dependencies change
+  useEffect(() => {
+    let isMounted = true;
+    const fetchCount = async () => {
+      try {
+        const db = getDB();
+        const count = await queryBuilder(db).count();
+        if (isMounted) setTotalCount(count);
+      } catch (err) {
+        console.error("Dexie count error:", err);
+      }
+    };
+    fetchCount();
+    return () => { isMounted = false; };
+  }, [...deps, refreshTrigger]);
+
+  // 2. Fetch page data when page, limit, or totalCount changes
+  useEffect(() => {
+    let isMounted = true;
+    const loadPage = async () => {
+      setIsLoading(true);
+      try {
+        const db = getDB();
+        const rawChunk = await queryBuilder(db)
+          .offset((page - 1) * limit)
+          .limit(limit)
+          .toArray();
+        const chunk = transformChunk ? await transformChunk(rawChunk) : rawChunk;
+        
+        if (isMounted) {
+          setData(chunk);
+          setIsLoading(false);
+          forceRepaintAfterRender();
+        }
+      } catch (err) {
+        console.error("Dexie pagination load error:", err);
+        if (isMounted) setIsLoading(false);
+      }
+    };
+    loadPage();
+    return () => { isMounted = false; };
+  }, [page, limit, totalCount, refreshTrigger, ...deps]);
+
+  const refresh = useCallback(() => setRefreshTrigger(prev => prev + 1), []);
+
+  return {
+    data,
+    totalCount,
+    isLoading,
+    refresh
   };
 }

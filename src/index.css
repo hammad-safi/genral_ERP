@@ -11,6 +11,8 @@
   color-scheme: light;
   color: #0f172a;
   background-color: #ffffff;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 * {
@@ -32,32 +34,30 @@ body {
   min-height: 100vh;
 }
 
-/* Custom scrollbar - Enhanced for Electron compatibility */
+/* Custom scrollbar - Slim modern style */
 ::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
+  width: 6px;
+  height: 6px;
 }
 
 ::-webkit-scrollbar-track {
-  background: #e2e8f0;
-  border-radius: 6px;
+  background: transparent;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #94a3b8;
-  border-radius: 6px;
-  border: 2px solid #e2e8f0;
+  background: #cbd5e1;
+  border-radius: 10px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #64748b;
+  background: #94a3b8;
 }
 
 /* Force scrollbar visibility in Electron */
 .overflow-auto,
 .overflow-y-auto {
   scrollbar-width: thin;
-  scrollbar-color: #94a3b8 #e2e8f0;
+  scrollbar-color: #cbd5e1 transparent;
 }
 
 /* Ensure scrollable containers have proper overflow */
@@ -65,12 +65,40 @@ body {
   overflow-y: auto !important;
 }
 
-/* Focus styles */
+/* Smooth transitions on interactive elements */
+button, a, input, select, textarea {
+  transition: all 0.15s ease;
+}
+
+/* Focus styles — blue ring for accessibility */
 input:focus,
 select:focus,
-textarea:focus,
-button:focus {
+textarea:focus {
   outline: none;
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.2);
+}
+
+button:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: 2px;
+}
+
+/* Glass backdrop utility */
+@layer utilities {
+  .backdrop-glass {
+    backdrop-filter: blur(12px) saturate(180%);
+    -webkit-backdrop-filter: blur(12px) saturate(180%);
+  }
+
+  /* Hide scrollbar for Chrome, Safari and Opera */
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+  /* Hide scrollbar for IE, Edge and Firefox */
+  .no-scrollbar {
+    -ms-overflow-style: none;  /* IE and Edge */
+    scrollbar-width: none;  /* Firefox */
+  }
 }
 
 /* Print styles */

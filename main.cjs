@@ -28,10 +28,8 @@ if (isPortable) {
   app.setPath('userData', path.join(app.getPath('appData'), 'ERP Application'));
 }
 
-// Disable hardware acceleration to prevent GPU compositor stalls.
-// Previously VizDisplayCompositor was disabled which caused the inverse problem.
-// Disabling HW acceleration uses CPU-based software rendering which is reliable.
-app.disableHardwareAcceleration();
+// Hardware acceleration is ENABLED for smooth GPU rendering.
+// CPU-based software rendering was causing performance issues.
 
 let mainWindow;
 
@@ -158,17 +156,31 @@ ipcMain.on('print-receipt', (event, { htmlContent, printerName }) => {
     </html>
   `;
 
-  printWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
+  printWindow.loadURL('about:blank');
 
-  printWindow.webContents.on('did-finish-load', () => {
-    printWindow.webContents.print({ 
-      silent: true, 
-      printBackground: true,
-      deviceName: printerName || undefined
-    }, (success, errorType) => {
-      event.sender.send('print-receipt-result', { success, errorType });
+  printWindow.webContents.on('did-finish-load', async () => {
+    try {
+      await printWindow.webContents.executeJavaScript(`
+        document.open();
+        document.write(decodeURIComponent("${encodeURIComponent(html)}"));
+        document.close();
+      `);
+      
+      // Small delay to ensure base64 images are painted before printing
+      setTimeout(() => {
+        printWindow.webContents.print({ 
+          silent: true, 
+          printBackground: true,
+          deviceName: printerName || undefined
+        }, (success, errorType) => {
+          event.sender.send('print-receipt-result', { success, errorType });
+          printWindow.close();
+        });
+      }, 250);
+    } catch (err) {
+      event.sender.send('print-receipt-result', { success: false, errorType: 'Injection failed' });
       printWindow.close();
-    });
+    }
   });
 });
 
@@ -207,18 +219,31 @@ ipcMain.on('print-qr-label', (event, { htmlContent, printerName, quantity = 1 })
     </html>
   `;
 
-  printWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
+  printWindow.loadURL('about:blank');
 
-  printWindow.webContents.on('did-finish-load', () => {
-    printWindow.webContents.print({ 
-      silent: true, 
-      printBackground: true,
-      deviceName: printerName || undefined,
-      copies: quantity
-    }, (success, errorType) => {
-      event.sender.send('print-qr-result', { success, errorType });
+  printWindow.webContents.on('did-finish-load', async () => {
+    try {
+      await printWindow.webContents.executeJavaScript(`
+        document.open();
+        document.write(decodeURIComponent("${encodeURIComponent(html)}"));
+        document.close();
+      `);
+      
+      setTimeout(() => {
+        printWindow.webContents.print({ 
+          silent: true, 
+          printBackground: true,
+          deviceName: printerName || undefined,
+          copies: quantity
+        }, (success, errorType) => {
+          event.sender.send('print-qr-result', { success, errorType });
+          printWindow.close();
+        });
+      }, 250);
+    } catch (err) {
+      event.sender.send('print-qr-result', { success: false, errorType: 'Injection failed' });
       printWindow.close();
-    });
+    }
   });
 });
 

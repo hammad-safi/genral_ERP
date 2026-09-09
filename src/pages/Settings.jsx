@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import CustomSelect from '@/components/CustomSelect';
 import { RefreshCw, Download, Upload, Trash2, Printer } from 'lucide-react';
 import PageHeader from '@/components/PageHeader';
 import ConfirmDialog from '@/components/ConfirmDialog';
@@ -122,7 +123,7 @@ export default function Settings() {
     try {
       const currentDB = getDB();
       const exportData = {
-        business: 'pharmacy',
+        business: 'business',
         exportDate: new Date().toISOString(),
         data: {
           products: await currentDB.products.toArray(),
@@ -170,7 +171,7 @@ export default function Settings() {
       const importData = JSON.parse(fileContent);
       
       // Check if business matches, but allow import if business field is missing (backward compatibility)
-      if (importData.business && importData.business !== 'pharmacy') {
+      if (importData.business && importData.business !== 'business') {
         // Store the import data and show confirm dialog instead of window.confirm
         setConfirmImportMismatch(importData);
         setImporting(false);
@@ -320,56 +321,38 @@ export default function Settings() {
               <h3 className="text-base font-bold text-slate-900">Hardware & Printing</h3>
             </div>
             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-              <label className="space-y-2">
-                <span className="text-sm font-medium text-slate-700">Receipt Printer (Thermal)</span>
-                <select
+              <label className="space-y-1.5">
+                <span className="text-[11px] font-bold text-slate-700">Receipt Printer (Thermal)</span>
+                <CustomSelect
                   value={form.receiptPrinter}
-                  onChange={(e) => setForm((current) => ({ ...current, receiptPrinter: e.target.value }))}
-                  className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-2.5 text-sm text-slate-900 outline-none transition-colors focus:border-blue-500 focus:bg-white"
-                >
-                  <option value="">-- Select Printer --</option>
-                  {availablePrinters.map((printer) => (
-                    <option key={printer.name} value={printer.name}>
-                      {printer.name} {printer.status !== 0 ? '(' + printer.status + ')' : ''}
-                    </option>
-                  ))}
-                </select>
-                <p className="text-xs text-slate-500">For 80mm POS receipts.</p>
+                  onChange={(val) => setForm((current) => ({ ...current, receiptPrinter: val }))}
+                  options={availablePrinters.map(p => ({label: p.name, value: p.name}))}
+                  placeholder="-- Select Printer --"
+                />
+                <p className="text-[9px] text-slate-400">For 80mm POS receipts.</p>
               </label>
 
-              <label className="space-y-2">
-                <span className="text-sm font-medium text-slate-700">QR Label Printer</span>
-                <select
+              <label className="space-y-1.5">
+                <span className="text-[11px] font-bold text-slate-700">QR Label Printer</span>
+                <CustomSelect
                   value={form.labelPrinter}
-                  onChange={(e) => setForm((current) => ({ ...current, labelPrinter: e.target.value }))}
-                  className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-2.5 text-sm text-slate-900 outline-none transition-colors focus:border-blue-500 focus:bg-white"
-                >
-                  <option value="">-- Select Printer --</option>
-                  {availablePrinters.map((printer) => (
-                    <option key={printer.name} value={printer.name}>
-                      {printer.name} {printer.status !== 0 ? '(' + printer.status + ')' : ''}
-                    </option>
-                  ))}
-                </select>
-                <p className="text-xs text-slate-500">For product QR code stickers.</p>
+                  onChange={(val) => setForm((current) => ({ ...current, labelPrinter: val }))}
+                  options={availablePrinters.map(p => ({label: p.name, value: p.name}))}
+                  placeholder="-- Select Printer --"
+                />
+                <p className="text-[9px] text-slate-400">For product QR code stickers.</p>
               </label>
               
-              <div className="space-y-2">
-                <span className="text-sm font-medium text-slate-700 block">Default System Printer</span>
-                <select
+              <label className="space-y-1.5">
+                <span className="text-[11px] font-bold text-slate-700 block">Default System Printer</span>
+                <CustomSelect
                   value={form.reportsPrinter}
-                  onChange={(e) => setForm((current) => ({ ...current, reportsPrinter: e.target.value }))}
-                  className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-2.5 text-sm text-slate-900 outline-none transition-colors focus:border-blue-500 focus:bg-white"
-                >
-                  <option value="">-- Generic Fallback Printer --</option>
-                  {availablePrinters.map((printer) => (
-                    <option key={printer.name} value={printer.name}>
-                      {printer.name} {printer.status !== 0 ? '(' + printer.status + ')' : ''}
-                    </option>
-                  ))}
-                </select>
-                <p className="text-xs text-slate-500">For full page A4 reports.</p>
-              </div>
+                  onChange={(val) => setForm((current) => ({ ...current, reportsPrinter: val }))}
+                  options={availablePrinters.map(p => ({label: p.name, value: p.name}))}
+                  placeholder="-- Generic Fallback Printer --"
+                />
+                <p className="text-[9px] text-slate-400">For full page A4 reports.</p>
+              </label>
             </div>
           </div>
 
@@ -481,7 +464,7 @@ export default function Settings() {
       <ConfirmDialog
         open={!!confirmImportMismatch}
         title="Business mismatch"
-        description={confirmImportMismatch ? `Backup is for "${confirmImportMismatch.business}" business, but you are importing to pharmacy. Continue anyway?` : ''}
+        description={confirmImportMismatch ? `Backup is for "${confirmImportMismatch.business}" business, but you are importing to business. Continue anyway?` : ''}
         confirmText="Import Anyway"
         cancelText="Cancel"
         onCancel={() => setConfirmImportMismatch(null)}

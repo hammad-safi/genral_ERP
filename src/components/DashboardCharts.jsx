@@ -1,27 +1,28 @@
-import { Cell, Line, LineChart, Bar, BarChart, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis, Legend } from 'recharts';
+import { Cell, Area, AreaChart, Bar, BarChart, ResponsiveContainer, Tooltip, XAxis, YAxis, Legend } from 'recharts';
 import { formatCurrency, formatDate } from '@/lib/utils';
+import { Package, TrendingUp } from 'lucide-react';
 
 const CustomTooltip = ({ active, payload, label, currency }) => {
   if (active && payload && payload.length) {
     return (
-      <div className="rounded-lg border border-slate-200 bg-white shadow-lg p-3">
-        <p className="text-sm font-medium text-slate-600">{label}</p>
-        <p className="text-sm text-slate-900">{formatCurrency(Number(payload[0].value), currency)}</p>
+      <div className="rounded-xl border border-slate-200 bg-white/90 backdrop-blur-sm shadow-card p-3">
+        <p className="text-xs font-semibold text-slate-500 mb-1">{label}</p>
+        <p className="text-sm font-bold text-blue-600">{formatCurrency(Number(payload[0].value), currency)}</p>
       </div>
     );
   }
   return null;
 };
 
-export default function DashboardCharts({ lineData, barData, pieData, recentTransactions = [], currency }) {
+export default function DashboardCharts({ lineData, barData, recentTransactions = [], topSellingProducts = [], currency }) {
   
   // Color scheme
   const colors = {
     textPrimary: '#64748b',
     textSecondary: '#94a3b8',
-    gridColor: '#e2e8f0',
+    gridColor: '#f1f5f9',
     axisColor: '#e2e8f0',
-    lineColor: '#3b82f6',
+    lineColor: '#2563eb', // blue-600
     revenueColor: '#3b82f6',
     expenseColor: '#ef4444',
   };
@@ -32,35 +33,46 @@ export default function DashboardCharts({ lineData, barData, pieData, recentTran
         <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
           <div className="mb-4 flex items-center justify-between">
             <div>
-              <p className="text-xs font-semibold uppercase tracking-wider text-slate-600">Trend</p>
-              <h3 className="text-lg font-bold text-slate-900">Daily Sales (30 days)</h3>
+              <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Trend</p>
+              <h3 className="text-lg font-bold text-slate-900 tracking-tight">Daily Sales (30 days)</h3>
+            </div>
+            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-blue-50 text-blue-600">
+              <TrendingUp className="h-4 w-4" />
             </div>
           </div>
           <div className="h-72">
             <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={lineData}>
+              <AreaChart data={lineData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                <defs>
+                  <linearGradient id="colorSales" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor={colors.lineColor} stopOpacity={0.2}/>
+                    <stop offset="95%" stopColor={colors.lineColor} stopOpacity={0}/>
+                  </linearGradient>
+                </defs>
                 <XAxis 
                   dataKey="name" 
                   tick={{ fontSize: 11, fill: colors.textPrimary }} 
                   axisLine={{ stroke: colors.axisColor }}
-                  tickLine={{ stroke: colors.gridColor }}
+                  tickLine={false}
+                  tickMargin={10}
                 />
                 <YAxis 
                   tick={{ fontSize: 11, fill: colors.textPrimary }}
-                  axisLine={{ stroke: colors.axisColor }}
-                  tickLine={{ stroke: colors.gridColor }}
+                  axisLine={false}
+                  tickLine={false}
                   tickFormatter={(value) => value >= 1000 ? `${(value / 1000).toFixed(0)}k` : value}
                 />
-                <Tooltip content={<CustomTooltip currency={currency} />} />
-                <Line 
+                <Tooltip content={<CustomTooltip currency={currency} />} cursor={{ stroke: colors.axisColor, strokeWidth: 1, strokeDasharray: '4 4' }} />
+                <Area 
                   type="monotone" 
                   dataKey="value" 
                   stroke={colors.lineColor} 
-                  strokeWidth={3} 
-                  dot={false}
-                  activeDot={{ r: 6, fill: colors.lineColor, stroke: '#fff', strokeWidth: 2 }}
+                  fillOpacity={1}
+                  fill="url(#colorSales)"
+                  strokeWidth={2} 
+                  activeDot={{ r: 4, fill: '#fff', stroke: colors.lineColor, strokeWidth: 2 }}
                 />
-              </LineChart>
+              </AreaChart>
             </ResponsiveContainer>
           </div>
         </section>
@@ -104,44 +116,70 @@ export default function DashboardCharts({ lineData, barData, pieData, recentTran
         <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
           <div className="mb-4 flex items-center justify-between">
             <div>
-              <p className="text-xs font-semibold uppercase tracking-wider text-slate-600">Distribution</p>
-              <h3 className="text-lg font-bold text-slate-900">Top Sales by Category</h3>
+              <p className="text-xs font-semibold uppercase tracking-wider text-slate-600">Performance</p>
+              <h3 className="text-lg font-bold text-slate-900">Top Selling Products</h3>
             </div>
           </div>
-          <div className="h-72">
-            {pieData.length > 0 ? (
-              <ResponsiveContainer width="100%" height="100%">
-                <PieChart>
-                  <Pie
-                    data={pieData.filter((entry) => entry.value > 0)}
-                    cx="50%"
-                    cy="50%"
-                    innerRadius={50}
-                    outerRadius={90}
-                    paddingAngle={2}
-                    dataKey="value"
-                    nameKey="name"
-                    label={({ name, percent }) => `${(percent * 100).toFixed(0)}%`}
-                    labelLine={{ stroke: colors.textSecondary }}
-                  >
-                    {pieData.filter((entry) => entry.value > 0).map((entry, index) => (
-                      <Cell key={`cell-${index}`} fill={entry.fill} />
-                    ))}
-                  </Pie>
-                  <Tooltip content={<CustomTooltip currency={currency} />} />
-                  <Legend 
-                    wrapperStyle={{ color: colors.textPrimary, paddingTop: '16px' }}
-                    iconType="square"
-                  />
-                </PieChart>
-              </ResponsiveContainer>
+          <div className="h-72 overflow-y-auto pr-2">
+            {topSellingProducts.length > 0 ? (
+              <div className="space-y-3">
+                {/* Top 1 Product is highlighted */}
+                <div className="flex items-start gap-4 rounded-xl bg-blue-50/50 p-4 border border-blue-100 relative mt-2">
+                  <div className="absolute -top-[1px] -left-[1px] bg-blue-600 text-white w-7 h-7 rounded-tl-xl rounded-br-xl flex items-center justify-center text-sm font-bold shadow-sm z-10">1</div>
+                  <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-xl bg-blue-100 text-blue-600 overflow-hidden ml-2">
+                    {topSellingProducts[0].image && topSellingProducts[0].image.startsWith('data:image') ? (
+                      <img src={topSellingProducts[0].image} alt={topSellingProducts[0].name} className="h-full w-full object-cover" />
+                    ) : (
+                      <div className="h-full w-full bg-[#dbeafe]"></div>
+                    )}
+                  </div>
+                  <div className="flex-1">
+                    <div className="flex justify-between items-start">
+                      <div>
+                        <h4 className="text-lg font-bold text-slate-900 leading-tight">{topSellingProducts[0].name}</h4>
+                      </div>
+                      <div className="text-right">
+                        <p className="text-base font-bold text-slate-900">{topSellingProducts[0].quantity} sold</p>
+                        <p className="text-sm font-semibold text-emerald-600">{formatCurrency(topSellingProducts[0].revenue, currency)}</p>
+                      </div>
+                    </div>
+                    <div className="mt-2 text-sm text-slate-500 font-medium">Price: {formatCurrency(topSellingProducts[0].price, currency)}</div>
+                  </div>
+                </div>
+
+                {/* Remaining top products */}
+                <div className="space-y-3">
+                  {topSellingProducts.slice(1).map((product, index) => (
+                    <div key={index} className="flex items-center justify-between p-3 rounded-xl border border-slate-100 bg-white hover:bg-slate-50 transition-colors relative mt-3">
+                      <div className="absolute -top-[1px] -left-[1px] bg-slate-200 text-slate-700 w-6 h-6 rounded-tl-xl rounded-br-xl flex items-center justify-center text-xs font-bold shadow-sm z-10">{index + 2}</div>
+                      <div className="flex items-center gap-3 pl-2">
+                        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-slate-100 text-slate-500 overflow-hidden">
+                          {product.image && product.image.startsWith('data:image') ? (
+                            <img src={product.image} alt={product.name} className="h-full w-full object-cover" />
+                          ) : (
+                            <div className="h-full w-full bg-slate-100"></div>
+                          )}
+                        </div>
+                        <div>
+                          <p className="font-bold text-slate-900 leading-tight">{product.name}</p>
+                          <p className="text-xs text-slate-500 mt-0.5">{formatCurrency(product.price, currency)}</p>
+                        </div>
+                      </div>
+                      <div className="text-right">
+                        <p className="text-sm font-bold text-slate-900">{product.quantity} sold</p>
+                        <p className="text-xs font-semibold text-emerald-600">{formatCurrency(product.revenue, currency)}</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
             ) : (
-              <div className="flex h-full items-center justify-center text-slate-500">No sales category data available yet.</div>
+              <div className="flex h-full items-center justify-center text-slate-500">No sales data available yet.</div>
             )}
           </div>
         </section>
 
-        <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-panel">
+        <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
           <div className="mb-4 flex items-center justify-between">
             <h3 className="text-lg font-semibold text-slate-900">Recent Transactions</h3>
           </div>
@@ -150,7 +188,7 @@ export default function DashboardCharts({ lineData, barData, pieData, recentTran
               <p className="text-sm text-slate-500">No recent activity yet.</p>
             ) : (
               recentTransactions.map((txn, index) => (
-                <div key={`${txn.type}-${index}`} className="rounded-3xl border border-slate-200 bg-slate-50 p-4">
+                <div key={`${txn.type}-${index}`} className="rounded-xl border border-slate-200 bg-slate-50 p-4">
                   <div className="flex items-start justify-between mb-3">
                     <p className="font-semibold text-slate-900">{txn.type}</p>
                     <p className="text-sm text-slate-500">{formatDate(txn.date)}</p>

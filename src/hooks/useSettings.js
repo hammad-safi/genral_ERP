@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react';
 import { liveQuery } from 'dexie';
 import { initDB, getDB } from '@/lib/db';
 
+const DEFAULT_CATEGORIES = ['General', 'Electronics', 'Clothing', 'Food', 'Medicine', 'Hardware', 'Accessories', 'Other'];
+
 const getDefaultSettings = () => {
   return {
     shopName: 'webzen Business',
@@ -12,6 +14,7 @@ const getDefaultSettings = () => {
     receiptPrinter: '',
     labelPrinter: '',
     reportsPrinter: '',
+    categories: DEFAULT_CATEGORIES,
   };
 };
 
@@ -22,6 +25,15 @@ const mapSettings = (rows) => {
   });
 
   const defaults = getDefaultSettings();
+
+  let categories = defaults.categories;
+  try {
+    if (map['categories']) {
+      const parsed = JSON.parse(map['categories']);
+      if (Array.isArray(parsed) && parsed.length > 0) categories = parsed;
+    }
+  } catch (e) { /* use defaults */ }
+
   return {
     shopName: map['shopName'] ?? defaults.shopName,
     currency: map['currency'] ?? defaults.currency,
@@ -31,6 +43,7 @@ const mapSettings = (rows) => {
     receiptPrinter: map['receiptPrinter'] ?? defaults.receiptPrinter,
     labelPrinter: map['labelPrinter'] ?? defaults.labelPrinter,
     reportsPrinter: map['reportsPrinter'] ?? defaults.reportsPrinter,
+    categories,
   };
 };
 

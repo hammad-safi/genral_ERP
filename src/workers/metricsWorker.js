@@ -26,14 +26,16 @@ self.onmessage = async (e) => {
     const db = getDB();
 
     if (type === 'DASHBOARD_METRICS') {
-      const [salesData, purchaseData, expenseData, inventoryData, productsData, peopleData, ledgerData] = await Promise.all([
+      const [salesData, purchaseData, expenseData, inventoryData, productsData, peopleData, ledgerData, supplierData, supplierLedgerData] = await Promise.all([
         db.sales.toArray(),
         db.purchases.toArray(),
         db.expenses.toArray(),
         db.inventory.toArray(),
         db.products.toArray(),
         db.customers.toArray(),
-        db.customerLedger.toArray()
+        db.customerLedger.toArray(),
+        db.suppliers.toArray(),
+        db.supplierLedger.toArray()
       ]);
 
       const activeSales = salesData.filter(s => s.returned !== true);
@@ -149,8 +151,8 @@ self.onmessage = async (e) => {
         ...purchaseData.map((purchase) => ({
           type: 'Purchase',
           date: purchase.date,
-          amount: purchase.totalCost,
-          label: purchase.productName,
+          amount: purchase.totalAmount,
+          label: purchase.items?.[0]?.productName,
         })),
       ]
         .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
@@ -177,6 +179,27 @@ self.onmessage = async (e) => {
 
       const peopleWithBalance = peopleBalances.filter(p => p.balance > 0).length;
 
+      const supplierBalances = supplierData.map(supplier => {
+        const idField = 'supplierId';
+        const ledger = supplierLedgerData.filter(e => e[idField] === supplier.id);
+        const totalCharged = ledger
+          .filter(e => e.type === 'charge' || e.type === 'purchase')
+          .reduce((sum, e) => sum + e.amount, 0);
+        const totalPaid = ledger
+          .filter(e => e.type === 'payment' || e.type === 'payment_reversal')
+          .reduce((sum, e) => sum + e.amount, 0);
+        return {
+          supplierId: supplier.id,
+          balance: totalCharged - totalPaid
+        };
+      });
+
+      const totalSupplierBalance = supplierBalances
+        .filter(s => s.balance > 0)
+        .reduce((sum, s) => sum + s.balance, 0);
+
+      const suppliersWithBalance = supplierBalances.filter(s => s.balance > 0).length;
+
       const productSales = {};
       activeSales.forEach((sale) => {
         sale.items.forEach((item) => {
@@ -191,6 +214,9 @@ self.onmessage = async (e) => {
           const product = productsData.find((p) => p.id === Number(productId));
           return {
             name: product?.name || 'Unknown',
+            price: product?.price || 0,
+            category: product?.category || 'Unknown',
+            image: product?.image || null,
             quantity,
             revenue: activeSales.reduce((sum, sale) => {
               const saleItem = sale.items.find((i) => i.productId === Number(productId));
@@ -208,7 +234,7 @@ self.onmessage = async (e) => {
           todaySalesCount: todaySales.length,
           thisMonthSalesTotal: salesThisMonth.reduce((sum, sale) => sum + sale.totalAmount, 0),
           thisMonthSalesCount: salesThisMonth.length,
-          thisMonthPurchasesTotal: purchasesThisMonth.reduce((sum, purchase) => sum + purchase.totalCost, 0),
+          thisMonthPurchasesTotal: purchasesThisMonth.reduce((sum, purchase) => sum + purchase.totalAmount, 0),
           thisMonthPurchasesCount: purchasesThisMonth.length,
           thisMonthExpensesTotal: expensesThisMonth.reduce((sum, expense) => sum + expense.amount, 0),
           netProfitThisMonth,
@@ -221,6 +247,8 @@ self.onmessage = async (e) => {
           recentTransactions,
           totalPeopleBalance,
           peopleWithBalance,
+          totalSupplierBalance,
+          suppliersWithBalance,
           topSellingProducts
         }
       });
@@ -258,7 +286,7 @@ self.onmessage = async (e) => {
       });
 
       const totalSalesAmount = filteredSales.reduce((acc, curr) => acc + curr.totalAmount, 0);
-      const totalPurchasesAmount = filteredPurchases.reduce((acc, curr) => acc + (curr.totalCost ?? 0), 0);
+      const totalPurchasesAmount = filteredPurchases.reduce((acc, curr) => acc + (curr.totalAmount ?? 0), 0);
       const totalExpensesAmount = filteredExpenses.reduce((acc, curr) => acc + curr.amount, 0);
       const netProfitAmount = calculateNetProfit(filteredSales, productsData, filteredExpenses);
       const totalInventoryValue = inventoryData.reduce((acc, item) => {
@@ -269,8 +297,9 @@ self.onmessage = async (e) => {
       const bestSelling = Object.values(filteredSales.reduce((acc, sale) => {
         sale.items.forEach((item) => {
           const key = item.productId;
-          acc[key] = (acc[key] || { name: item.productName, qty: 0 });
+          acc[key] = (acc[key] || { name: item.productName, qty: 0, revenue: 0 });
           acc[key].qty += item.qty;
+          acc[key].revenue += (item.subtotal || (item.qty * item.unitPrice) || 0);
         });
         return acc;
       }, {}))
@@ -333,7 +362,7 @@ self.onmessage = async (e) => {
         const monthlyExpenses = expensesByMonth[month] ?? [];
 
         const totalSales = monthlySales.reduce((s, x) => s + (x.totalAmount ?? 0), 0);
-        const totalPurchases = monthlyPurchases.reduce((s, x) => s + (x.totalCost ?? 0), 0);
+        const totalPurchases = monthlyPurchases.reduce((s, x) => s + (x.totalAmount ?? 0), 0);
         const totalExpenses = monthlyExpenses.reduce((s, x) => s + (x.amount ?? 0), 0);
         const netProfit = calculateNetProfit(monthlySales, products, monthlyExpenses);
 

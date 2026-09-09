@@ -1,13 +1,14 @@
 import React, { useRef, useEffect, useState } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 
-export default function VirtualTable({
+const VirtualTable = React.memo(function VirtualTable({
   data,
   columns,
   renderRow,
   hasMore,
   loadMoreRef,
   emptyState,
+  containerClassName = "w-full overflow-x-auto overflow-y-auto max-h-[58vh] rounded-2xl border border-slate-200 bg-white shadow-card relative",
 }) {
   const parentRef = useRef(null);
   
@@ -31,12 +32,12 @@ export default function VirtualTable({
       : 0;
 
   return (
-    <div ref={parentRef} className="w-full overflow-x-auto overflow-y-auto max-h-[58vh] rounded-3xl border border-slate-200 bg-white shadow-panel relative">
-      <table className="w-full text-left">
-        <thead className="sticky top-0 bg-slate-50 z-10 border-b border-slate-200">
-          <tr className="text-xs font-semibold uppercase tracking-wider text-slate-600">
+    <div ref={parentRef} className={containerClassName}>
+      <table className="w-full text-left border-x border-slate-200">
+        <thead className="sticky top-0 bg-white z-10 border-y border-slate-200">
+          <tr className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
             {columns.map((col, idx) => (
-              <th key={idx} className={`px-4 py-3 ${col.className || ''}`}>
+              <th key={idx} className={`px-4 py-5 ${col.className || ''}`}>
                 {col.header}
               </th>
             ))}
@@ -72,4 +73,6 @@ export default function VirtualTable({
       {data.length === 0 && emptyState}
     </div>
   );
-}
+});
+
+export default VirtualTable;

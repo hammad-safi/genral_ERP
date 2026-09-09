@@ -78,11 +78,11 @@ export default function ActivationScreen({ onActivated, licenseStatus, onContinu
               type="text"
               readOnly
               value={systemId}
-              className="flex-1 bg-slate-50 border border-slate-300 rounded-l-lg py-2 px-3 text-slate-600 font-mono text-sm focus:outline-none"
+              className="flex-1 bg-slate-50 border border-slate-300 rounded-l-xl py-2 px-3 text-slate-600 font-mono text-sm focus:outline-none"
             />
             <button
               onClick={handleCopy}
-              className="bg-slate-200 hover:bg-slate-300 border border-l-0 border-slate-300 rounded-r-lg px-4 flex items-center justify-center transition-colors"
+              className="bg-slate-200 hover:bg-slate-300 border border-l-0 border-slate-300 rounded-r-xl px-4 flex items-center justify-center transition-colors"
               title="Copy System ID"
             >
               {copied ? <CheckCircle className="w-5 h-5 text-green-600" /> : <Copy className="w-5 h-5 text-slate-600" />}
@@ -99,12 +99,12 @@ export default function ActivationScreen({ onActivated, licenseStatus, onContinu
               value={activationKey}
               onChange={(e) => setActivationKey(e.target.value)}
               placeholder="Paste your activation key here..."
-              className="w-full bg-white border border-slate-300 rounded-lg py-2 px-3 text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 font-mono text-sm min-h-[100px]"
+              className="w-full bg-white border border-slate-300 rounded-xl py-2 px-3 text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 font-mono text-sm min-h-[100px]"
             />
           </div>
 
           {error && (
-            <div className="mb-6 p-3 bg-red-50 border border-red-200 rounded-lg text-red-600 text-sm text-center">
+            <div className="mb-6 p-3 bg-red-50 border border-red-200 rounded-xl text-red-600 text-sm text-center">
               {error}
             </div>
           )}
@@ -112,7 +112,7 @@ export default function ActivationScreen({ onActivated, licenseStatus, onContinu
           <button
             type="submit"
             disabled={loading}
-            className="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-3 px-4 rounded-lg flex items-center justify-center transition-colors disabled:opacity-50"
+            className="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-3 px-4 rounded-xl flex items-center justify-center transition-colors disabled:opacity-50"
           >
             {loading ? (
               <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white"></div>
@@ -132,7 +132,7 @@ export default function ActivationScreen({ onActivated, licenseStatus, onContinu
             </p>
             <button
               onClick={onContinueTrial}
-              className="w-full bg-white border-2 border-slate-300 hover:border-slate-400 text-slate-700 font-medium py-3 px-4 rounded-lg flex items-center justify-center transition-colors"
+              className="w-full bg-white border-2 border-slate-300 hover:border-slate-400 text-slate-700 font-medium py-3 px-4 rounded-xl flex items-center justify-center transition-colors"
             >
               <Clock className="w-5 h-5 mr-2 text-slate-500" />
               Continue Trial
