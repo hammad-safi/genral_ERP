@@ -1,0 +1,9 @@
+node_modules
+dist
+release
+build
+ShopERP-Setup.exe
+*.blockmap
+license-generator-app
+licensing-tools
+build_err.log
