@@ -954,7 +954,27 @@ export default function Purchases() {
 
   const openNewPurchase = () => modalRef.current?.openNew();
 
-  const deletePurchase = async (purchase) => {
+    const performBulkDelete = async () => {
+    if (selectedIds.length === 0) return;
+    setConfirmBulkDelete(false);
+    setIsDeleting(true);
+    try {
+      const res = await fetch('/api/purchases', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids: selectedIds })
+      });
+      if (!res.ok) throw new Error('Failed to delete purchases');
+      clearSelection();
+      if (typeof refresh === 'function') refresh();
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
+const deletePurchase = async (purchase) => {
       if (!purchase.id) return;
       try {
         const res = await fetch('/api/purchases/' + purchase.id, { method: 'DELETE' });
