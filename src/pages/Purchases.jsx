@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, useCallback, memo, forwardRef, useImperativeHandle, useRef } from 'react';
-import { useLiveQuery } from 'dexie-react-hooks';
+
 import { Plus, Printer, X, Search, FileText, BookOpen, Trash2 } from 'lucide-react';
 import { useReactToPrint } from 'react-to-print';
 import PageHeader from '@/components/PageHeader';
@@ -10,7 +10,7 @@ import BulkDeleteBar from '@/components/BulkDeleteBar';
 import { useSettings } from '@/hooks/useSettings';
 import { useMultiSelect } from '@/hooks/useMultiSelect';
 import { useBusiness } from '@/contexts/BusinessContext';
-import { useDexieOffsetPagination, clearPaginationCache } from '@/hooks/useDexiePagination';
+
 import GlobalTable from '@/components/GlobalTable';
 import GlobalSearch from '@/components/GlobalSearch';
 import GlobalFilter from '@/components/GlobalFilter';
@@ -18,17 +18,21 @@ import GlobalButton from '@/components/GlobalButton';
 import RowsDropdown from '@/components/RowsDropdown';
 import ColumnVisibilityDropdown from '@/components/ColumnVisibilityDropdown';
 import { useDebounce } from '@/hooks/useDebounce';
+import { useSparsePagination } from '@/hooks/useSparsePagination';
 import { formatCurrency, formatDate, removeLeadingZeros, forceRepaintAfterRender } from '@/lib/utils';
-import { initDB, getDB } from '@/lib/db';
+
 
 const PurchaseFormModal = memo(forwardRef(({ currency, onSuccess }, ref) => {
   const [openForm, setOpenForm] = useState(false);
   const [formError, setFormError] = useState(null);
   
   const [formCategoryFilter, setFormCategoryFilter] = useState('All');
-  const categoriesList = useLiveQuery(() => getDB().categories.toArray(), []) || [];
+  const [categoriesList, setCategoriesList] = useState([]);
+  useEffect(() => { fetch('/api/categories').then(r => r.json()).then(d => setCategoriesList(d.data || d || [])); }, []);
 
   const [productSearch, setProductSearch] = useState('');
+  const [showAddSupplierForm, setShowAddSupplierForm] = useState(false);
+  const [newSupplier, setNewSupplier] = useState({ name: '', phone: '', email: '', address: '', openingBalance: '' });
   const [isProductDropdownOpen, setIsProductDropdownOpen] = useState(false);
   const [supplierSearch, setSupplierSearch] = useState('');
   const [isSupplierDropdownOpen, setIsSupplierDropdownOpen] = useState(false);
@@ -54,20 +58,23 @@ const PurchaseFormModal = memo(forwardRef(({ currency, onSuccess }, ref) => {
   const [cart, setCart] = useState([]);
 
   // Queries
-  const selectedSupplier = useLiveQuery(() => transaction.supplierId && openForm ? getDB().suppliers.get(transaction.supplierId) : Promise.resolve(null), [transaction.supplierId, openForm]);
-  const selectedProduct = useLiveQuery(() => itemForm.productId && openForm ? getDB().products.get(itemForm.productId) : Promise.resolve(null), [itemForm.productId, openForm]);
-  const selectedProductStock = useLiveQuery(() => itemForm.productId && openForm ? getDB().inventory.where('productId').equals(itemForm.productId).first() : Promise.resolve(null), [itemForm.productId, openForm]);
+  const [selectedSupplier, setSelectedSupplier] = useState(null);
+  useEffect(() => {
+    if (!transaction.supplierId) { setSelectedSupplier(null); return; }
+    fetch('/api/suppliers/' + transaction.supplierId).then(r => r.json()).then(d => setSelectedSupplier(d.data || d));
+  }, [transaction.supplierId]);
+  const [selectedProduct, setSelectedProduct] = useState(null);
+  useEffect(() => {
+    if (!itemForm.productId) { setSelectedProduct(null); return; }
+    fetch('/api/products/' + itemForm.productId).then(r => r.json()).then(d => setSelectedProduct(d.data || d));
+  }, [itemForm.productId]);
+  const selectedProductStock = selectedProduct ? selectedProduct.stockQuantity : null;
 
   useEffect(() => {
     if (selectedSupplier) {
-      const fetchBalance = async () => {
-        const currentDB = getDB();
-        const ledgerData = await currentDB.supplierLedger.where('supplierId').equals(selectedSupplier.id).toArray();
-        const charged = ledgerData.filter(e => e.type === 'charge' || e.type === 'purchase').reduce((s, e) => s + e.amount, 0);
-        const paid = ledgerData.filter(e => e.type === 'payment' || e.type === 'payment_reversal').reduce((s, e) => s + e.amount, 0);
-        setSupplierBalance(charged - paid);
-      };
-      fetchBalance();
+      setSupplierBalance(selectedSupplier.openingBalance || 0);
+
+
     } else {
       setSupplierBalance(0);
     }
@@ -103,86 +110,61 @@ const PurchaseFormModal = memo(forwardRef(({ currency, onSuccess }, ref) => {
   const debouncedProductSearch = useDebounce(productSearch, 300);
   const debouncedSupplierSearch = useDebounce(supplierSearch, 300);
 
-  const productResults = useLiveQuery(async () => {
-    if (!openForm) return [];
-    if (!debouncedProductSearch && formCategoryFilter === 'All') return [];
-    
-    const db = getDB();
-    const term = debouncedProductSearch.toLowerCase();
-    
-    let products = [];
-    if (term) {
-      products = await db.products.filter(p => {
-        const nameMatch = p.name?.toLowerCase().includes(term);
-        const barcodeMatch = p.barcode?.toLowerCase().includes(term);
-        return nameMatch || barcodeMatch;
-      }).toArray();
-    } else {
-      products = await db.products.toArray();
-    }
-    
-    const categoriesList = await db.categories.toArray();
-    const catMap = new Map(categoriesList.map(c => [c.id, c]));
+  const [productResults, setProductResults] = useState([]);
+  useEffect(() => {
+    if (!openForm) return;
+    const fetchProds = async () => {
+      let url = '/api/products?';
+      if (debouncedProductSearch) url += 'search=' + encodeURIComponent(debouncedProductSearch) + '&';
+      if (formCategoryFilter !== 'All') url += 'category=' + encodeURIComponent(formCategoryFilter);
+      const res = await fetch(url);
+      const data = await res.json();
+      setProductResults(data.data || []);
+    };
+    fetchProds();
+  }, [debouncedProductSearch, formCategoryFilter, openForm]);
 
-    // Apply category filter
-    if (formCategoryFilter !== 'All') {
-      products = products.filter(p => {
-        let matches = p.category === formCategoryFilter || p.category === Number(formCategoryFilter);
-        if (!matches) {
-          let currId = p.category;
-          let safeCount = 0;
-          while (currId && safeCount < 20) {
-            const cat = catMap.get(currId) || catMap.get(Number(currId));
-            if (!cat) break;
-            if (cat.parentId === formCategoryFilter || cat.parentId === Number(formCategoryFilter) || Number(cat.parentId) === Number(formCategoryFilter)) {
-              matches = true;
-              break;
-            }
-            currId = cat.parentId;
-            safeCount++;
-          }
-        }
-        return matches;
+  const [supplierResults, setSupplierResults] = useState([]);
+  useEffect(() => {
+    if (!openForm) return;
+    const fetchSupps = async () => {
+      let url = '/api/suppliers?';
+      if (debouncedSupplierSearch) url += 'search=' + encodeURIComponent(debouncedSupplierSearch);
+      const res = await fetch(url);
+      const data = await res.json();
+      setSupplierResults(data.data || []);
+    };
+    fetchSupps();
+  }, [debouncedSupplierSearch, openForm]);
+
+
+  const handleSaveNewSupplier = async () => {
+    if (!newSupplier.name.trim() || !newSupplier.phone.trim()) {
+      setFormError('Supplier Name and Phone are required.');
+      return;
+    }
+    try {
+      const res = await fetch('/api/suppliers', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ...newSupplier,
+          openingBalance: parseFloat(newSupplier.openingBalance) || 0
+        })
       });
+      if (!res.ok) throw new Error('Failed to create supplier');
+      const data = await res.json();
+      const created = data.data || data;
+      setTransaction({ ...transaction, supplierId: created.id });
+      setSupplierSearch('');
+      setShowAddSupplierForm(false);
+      setNewSupplier({ name: '', phone: '', email: '', address: '', openingBalance: '' });
+      
+    } catch (err) {
+      console.error(err);
+      setFormError('Failed to create new supplier.');
     }
-
-    products = products.slice(0, 20); // Limit to 20 results for performance
-    
-    const inventoryItems = await db.inventory.where('productId').anyOf(products.map(p => p.id)).toArray();
-
-    return products.map(product => {
-      const inv = inventoryItems.find(i => i.productId === product.id);
-      
-      const chain = [];
-      let currId = product.category;
-      let safeCount = 0;
-      while (currId && safeCount < 20) {
-        chain.unshift(currId);
-        const cat = catMap.get(currId) || catMap.get(Number(currId));
-        if (!cat) break;
-        currId = cat.parentId ? Number(cat.parentId) : null;
-        safeCount++;
-      }
-      
-      const categoryNames = chain.map(id => catMap.get(id)?.name || catMap.get(Number(id))?.name).filter(Boolean);
-      
-      return {
-        ...product,
-        currentStock: inv ? inv.quantity : 0,
-        categoryPath: categoryNames.length > 0 ? categoryNames.join(' → ') : (product.category || 'Uncategorized')
-      };
-    });
-  }, [debouncedProductSearch, openForm, formCategoryFilter], []);
-
-  const supplierResults = useLiveQuery(async () => {
-    if (!debouncedSupplierSearch || !openForm) return [];
-    const db = getDB();
-    const term = debouncedSupplierSearch.toLowerCase();
-    return await db.suppliers.filter(s => 
-      (s.name && s.name.toLowerCase().includes(term)) || 
-      (s.phone && s.phone.toLowerCase().includes(term))
-    ).limit(10).toArray();
-  }, [debouncedSupplierSearch, openForm], []);
+  };
 
   const addItemToCart = () => {
     setFormError(null);
@@ -252,149 +234,50 @@ const PurchaseFormModal = memo(forwardRef(({ currency, onSuccess }, ref) => {
       return;
     }
 
-    const currentDB = getDB();
-    const purchaseDate = new Date(transaction.date).toISOString();
-    
-    const lastBatch = await currentDB.productBatches.orderBy('id').last();
-    let nextBatchId = lastBatch ? lastBatch.id + 1 : 1;
-
-    const savedItems = [];
-
-    // Loop items to update inventory, batches, and price history
-    for (const item of cart) {
-      let generatedBatchNumber = item.batchNumber?.trim();
-      if (!generatedBatchNumber) {
-        generatedBatchNumber = `B-${String(nextBatchId).padStart(4, '0')}`;
-        nextBatchId++;
-      }
-
-      savedItems.push({
+    const payload = {
+      supplierName: selectedSupplier?.name || 'Walk-in Supplier',
+      supplierId: selectedSupplier?.id || 0,
+      date: new Date(transaction.date).toISOString(),
+      items: cart.map(item => ({
         productId: item.productId,
         productName: item.product.name,
         quantity: item.quantity,
         costPrice: item.costPrice,
         totalCost: item.totalCost,
         expiryDate: item.expiryDate || null,
-        batchNumber: generatedBatchNumber,
-      });
-
-      // Update price history (used for WAC calculation)
-      const allHistory = await currentDB.priceHistory.where('productId').equals(item.productId).toArray();
-      const purchaseHistory = allHistory.filter(h => h.type === 'purchase');
-      const totalCostAmount = purchaseHistory.reduce((sum, h) => sum + ((h.purchasePrice || 0) * (h.quantity || 1)), 0) + item.totalCost;
-      const totalQty = purchaseHistory.reduce((sum, h) => sum + (h.quantity || 1), 0) + item.quantity;
-      const wac = totalQty > 0 ? totalCostAmount / totalQty : 0;
-      await currentDB.products.update(item.productId, { costPrice: wac });
-
-      await currentDB.priceHistory.add({
-        productId: item.productId,
-        type: 'purchase',
-        purchasePrice: item.costPrice,
-        wac: wac,
-        date: purchaseDate,
-        quantity: item.quantity,
-        supplier: selectedSupplier?.name,
-      });
-
-      // Update Inventory
-      const inventoryItem = await currentDB.inventory.where('productId').equals(item.productId).first();
-      if (item.expiryDate) {
-        await currentDB.products.update(item.productId, { expiryDate: item.expiryDate });
-      }
-
-      if (inventoryItem && inventoryItem.id) {
-        await currentDB.inventory.update(inventoryItem.id, {
-          quantity: inventoryItem.quantity + item.quantity,
-          lastUpdated: new Date().toISOString(),
-          expiryDate: item.expiryDate || inventoryItem.expiryDate || null,
-        });
-      } else {
-        await currentDB.inventory.add({
-          productId: item.productId,
-          quantity: item.quantity,
-          lowStockThreshold: 5,
-          lastUpdated: new Date().toISOString(),
-          expiryDate: item.expiryDate || null,
-        });
-      }
-
-      // Update Batches
-      const allBatches = await currentDB.productBatches.where('productId').equals(item.productId).toArray();
-      const existingBatch = allBatches.find(b => b.batchNumber === generatedBatchNumber);
-
-      if (existingBatch && existingBatch.id) {
-        await currentDB.productBatches.update(existingBatch.id, {
-          quantity: existingBatch.quantity + item.quantity,
-          costPrice: item.costPrice,
-          expiryDate: item.expiryDate || existingBatch.expiryDate || null
-        });
-      } else {
-        await currentDB.productBatches.add({
-          productId: item.productId,
-          batchNumber: generatedBatchNumber,
-          quantity: item.quantity,
-          costPrice: item.costPrice,
-          expiryDate: item.expiryDate || null,
-          createdAt: new Date().toISOString()
-        });
-      }
-    }
-
-    // Generate a unique Purchase Invoice ID for UI
-    const lastPurchase = await currentDB.purchases.orderBy('id').last();
-    const purchaseId = lastPurchase ? lastPurchase.id + 1 : 1;
-    const purchaseNumber = `PUR-${String(purchaseId).padStart(4, '0')}`;
-
-    const purchase = {
-      purchaseNumber,
-      supplier: selectedSupplier?.name || 'Walk-in Supplier',
-      supplierId: selectedSupplier?.id || 0,
-      date: purchaseDate,
-      items: savedItems,
-      subtotal: subtotal,
-      discount: discount,
-      tax: tax,
+        batchNumber: item.batchNumber
+      })),
+      subtotal,
+      discount,
+      tax,
       totalAmount: grandTotal,
-      paidAmount: amtPaid,
-      dueAmount: grandTotal - amtPaid,
-      paymentStatus: amtPaid >= grandTotal ? 'Paid' : amtPaid > 0 ? 'Partial' : 'Unpaid',
+      amountPaid: amtPaid,
       paymentMethod: transaction.paymentMethod,
-      note: transaction.note,
+      note: transaction.note
     };
-    
-    // Save ONE record to purchases
-    await currentDB.purchases.add(purchase);
 
-    if (selectedSupplier) {
-      await currentDB.supplierLedger.add({
-        supplierId: selectedSupplier.id,
-        type: 'charge',
-        amount: grandTotal,
-        description: `Purchase Invoice ${purchaseNumber}`,
-        date: purchaseDate,
+    try {
+      const res = await fetch('/api/purchases', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
       });
-
-      if (amtPaid > 0) {
-        await currentDB.supplierLedger.add({
-          supplierId: selectedSupplier.id,
-          type: 'payment',
-          amount: amtPaid,
-          description: `Payment for ${purchaseNumber}`,
-          date: purchaseDate,
-        });
-      }
+      if (!res.ok) throw new Error('Failed to save purchase');
+      
+      
+      
+      setOpenForm(false);
+      onSuccess('add');
+    } catch (err) {
+      console.error(err);
+      setFormError('Failed to record purchase.');
     }
-
-    clearPaginationCache('inventory');
-    setOpenForm(false);
-    onSuccess('add');
   };
-
   if (!openForm) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-3 sm:p-6 text-slate-800 font-sans antialiased selection:bg-brand-500 selection:text-white backdrop-blur-sm overflow-y-auto">
-      <div className="bg-white w-full max-w-6xl rounded-2xl shadow-2xl border border-slate-200/80 flex flex-col overflow-hidden my-auto animate-in fade-in zoom-in-95 duration-200" data-purpose="purchase-invoice-modal">
+    <div className="absolute inset-0 z-50 flex flex-col bg-slate-50 text-slate-800 font-sans antialiased selection:bg-brand-500 selection:text-white overflow-hidden">
+      <div className="bg-white w-full h-full flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-200" data-purpose="purchase-invoice-modal">
         {/* BEGIN: ModalHeader */}
         <header className="px-6 py-5 border-b border-slate-100 flex items-center justify-between bg-white sticky top-0 z-20">
           <div className="flex items-center gap-3.5">
@@ -731,10 +614,12 @@ const PurchaseFormModal = memo(forwardRef(({ currency, onSuccess }, ref) => {
                 
                 {/* Section: Invoice Metadata Details */}
                 <div className="bg-white p-5 rounded-xl border border-slate-200/90 shadow-sm" data-purpose="invoice-details-card">
-                  <div className="flex items-center gap-2 pb-3.5 mb-4 border-b border-slate-100">
-                    <span className="w-2 h-2 rounded-full bg-indigo-500"></span>
-                    <h2 className="text-xs font-bold tracking-wider text-slate-700 uppercase">Invoice Details</h2>
-                  </div>
+                  <div className="flex items-center gap-2.5 pb-4 mb-4 border-b border-slate-100">
+                      <div className="text-indigo-600">
+                        <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20"><path d="M9 6a3 3 0 11-6 0 3 3 0 016 0zM17 6a3 3 0 11-6 0 3 3 0 016 0zM12.93 17c.046-.327.07-.66.07-1a6.97 6.97 0 00-1.5-4.33A5 5 0 0119 16v1h-6.07zM6 11a5 5 0 015 5v1H1v-1a5 5 0 015-5z"></path></svg>
+                      </div>
+                      <h2 className="text-sm font-bold text-slate-800">Supplier Details</h2>
+                    </div>
                   <div className="space-y-4">
                     
                     {/* Supplier */}
@@ -780,9 +665,9 @@ const PurchaseFormModal = memo(forwardRef(({ currency, onSuccess }, ref) => {
                     
                     {/* Date Picker */}
                     <div>
-                      <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5" htmlFor="invoice-date">
-                        Date <span className="text-rose-500">*</span>
-                      </label>
+                      <label className="block text-[11px] font-bold text-slate-700 mb-1.5" htmlFor="invoice-date">
+                          Date <span className="text-rose-500">*</span>
+                        </label>
                       <div className="relative">
                         <input 
                           id="invoice-date"
@@ -797,9 +682,9 @@ const PurchaseFormModal = memo(forwardRef(({ currency, onSuccess }, ref) => {
                     
                     {/* Note */}
                     <div>
-                      <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5" htmlFor="invoice-note">
-                        Note <span className="text-slate-400 font-normal lowercase">(optional)</span>
-                      </label>
+                      <label className="block text-[11px] font-bold text-slate-700 mb-1.5" htmlFor="invoice-note">
+                          Note <span className="text-slate-400 font-normal">(optional)</span>
+                        </label>
                       <textarea 
                         id="invoice-note"
                         className="w-full bg-white text-slate-800 text-sm rounded-lg border border-slate-200 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 p-2.5 shadow-sm transition-all placeholder:text-slate-300 resize-none" 
@@ -815,9 +700,11 @@ const PurchaseFormModal = memo(forwardRef(({ currency, onSuccess }, ref) => {
                 {/* Section: Payment Summary Card */}
                 <div className="bg-white p-5 rounded-xl border border-slate-200/90 shadow-sm flex flex-col" data-purpose="payment-summary-card">
                   <div className="flex items-center justify-between pb-3.5 mb-4 border-b border-slate-100">
-                    <div className="flex items-center gap-2">
-                      <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
-                      <h2 className="text-xs font-bold tracking-wider text-slate-700 uppercase">Payment Summary</h2>
+                    <div className="flex items-center gap-2.5">
+                      <div className="text-emerald-600">
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z"></path></svg>
+                      </div>
+                      <h2 className="text-sm font-bold text-slate-800">Payment Summary</h2>
                     </div>
                     <span className="text-[11px] font-medium text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">Auto-Calculated</span>
                   </div>
@@ -975,8 +862,10 @@ export default function Purchases() {
   const [historySearchQuery, setHistorySearchQuery] = useState('');
   const debouncedHistorySearchQuery = useDebounce(historySearchQuery, 300);
 
-  const categoriesList = useLiveQuery(() => getDB().categories.toArray(), []) || [];
-  const productsList = useLiveQuery(() => getDB().products.toArray(), []) || [];
+  const [categoriesList, setCategoriesList] = useState([]);
+  useEffect(() => { fetch('/api/categories').then(r => r.json()).then(d => setCategoriesList(d.data || d || [])); }, []);
+  const [productsList, setProductsList] = useState([]);
+  useEffect(() => { fetch('/api/products').then(r => r.json()).then(d => setProductsList(d.data || d || [])); }, []);
 
   const optionalColumns = ['Supplier', 'Paid', 'Balance', 'Action'];
   const [visibleCols, setVisibleCols] = useState(() => {
@@ -996,31 +885,9 @@ export default function Purchases() {
     });
   };
 
-  const matchedSuppliers = useLiveQuery(
-    async () => {
-      if (!debouncedHistorySearchQuery) return [];
-      const term = debouncedHistorySearchQuery.toLowerCase();
-      const currentDB = getDB();
-      return await currentDB.suppliers.filter(s => s.name ? s.name.toLowerCase().includes(term) : false).primaryKeys();
-    },
-    [debouncedHistorySearchQuery],
-    []
-  );
+  
 
-  const matchedProducts = useLiveQuery(
-    async () => {
-      if (!debouncedHistorySearchQuery) return [];
-      const term = debouncedHistorySearchQuery.toLowerCase();
-      const currentDB = getDB();
-      return await currentDB.products.filter(p => {
-        const nameMatch = p.name ? p.name.toLowerCase().includes(term) : false;
-        const barcodeMatch = p.barcode ? p.barcode.toLowerCase().includes(term) : false;
-        return nameMatch || barcodeMatch;
-      }).primaryKeys();
-    },
-    [debouncedHistorySearchQuery],
-    []
-  );
+  
 
   const modalRef = useRef(null);
   const invoiceRef = useRef(null);
@@ -1031,12 +898,11 @@ export default function Purchases() {
   });
 
   const viewInvoice = async (purchase) => {
-    const currentDB = getDB();
     let supplier = null;
     if (purchase.supplierId) {
-      supplier = await currentDB.suppliers.get(purchase.supplierId);
+      supplier = null;
     } else if (purchase.supplier) {
-      supplier = await currentDB.suppliers.where('name').equals(purchase.supplier).first();
+      supplier = null;
     }
     setPrintingPurchase({ 
       purchase: purchase, 
@@ -1101,164 +967,13 @@ export default function Purchases() {
   const openNewPurchase = () => modalRef.current?.openNew();
 
   const deletePurchase = async (purchase) => {
-    if (!purchase.id) return;
-
-    const currentDB = getDB();
-    await currentDB.purchases.delete(purchase.id);
-    
-    const itemsToRevert = purchase.items || [{
-      productId: purchase.productId,
-      quantity: purchase.quantity,
-      batchNumber: purchase.batchNumber,
-      totalCost: purchase.totalCost,
-    }];
-    
-    for (const item of itemsToRevert) {
-      if (!item.productId) continue;
-      
-      const inventoryItem = await currentDB.inventory.where('productId').equals(item.productId).first();
-      if (inventoryItem && inventoryItem.id) {
-        const updatedQuantity = Math.max(0, inventoryItem.quantity - item.quantity);
-        await currentDB.inventory.update(inventoryItem.id, { quantity: updatedQuantity, lastUpdated: new Date().toISOString() });
-      }
-
-      if (item.batchNumber) {
-        const allBatches = await currentDB.productBatches.where('productId').equals(item.productId).toArray();
-        const batchItem = allBatches.find(b => b.batchNumber === item.batchNumber);
-        if (batchItem && batchItem.id) {
-          const updatedQuantity = Math.max(0, batchItem.quantity - item.quantity);
-          await currentDB.productBatches.update(batchItem.id, { quantity: updatedQuantity });
-        }
-      }
-      
-      const allHistory = await currentDB.priceHistory.where('productId').equals(item.productId).toArray();
-      const purchaseHistory = allHistory.filter(h => h.type === 'purchase');
-      if (purchaseHistory.length > 0) {
-        const totalCostAmt = purchaseHistory.reduce((s, h) => s + ((h.purchasePrice || 0) * (h.quantity || 1)), 0);
-        const totalQtyAmt = purchaseHistory.reduce((s, h) => s + (h.quantity || 1), 0);
-        const newWac = totalQtyAmt > 0 ? totalCostAmt / totalQtyAmt : 0;
-        await currentDB.products.update(item.productId, { costPrice: newWac });
-      } else {
-        await currentDB.products.update(item.productId, { costPrice: 0 });
-      }
-    }
-
-    if (purchase.supplierId) {
-      await currentDB.supplierLedger.add({
-        supplierId: purchase.supplierId,
-        type: 'charge_reversal',
-        amount: purchase.totalAmount || purchase.totalCost,
-        description: `Reversal of deleted invoice #${purchase.purchaseNumber || purchase.id}`,
-        date: new Date().toISOString(),
-      });
-      if (purchase.paidAmount || purchase.amountPaid) {
-        await currentDB.supplierLedger.add({
-          supplierId: purchase.supplierId,
-          type: 'payment_reversal',
-          amount: purchase.paidAmount || purchase.amountPaid,
-          description: `Reversal of payment for deleted invoice #${purchase.purchaseNumber || purchase.id}`,
-          date: new Date().toISOString(),
-        });
-      }
-    }
-
-    clearPaginationCache('inventory');
-    refreshPurchases();
-    setConfirmDeletePurchase(null);
-  };
-
-  const deleteSelected = () => {
-    if (selectedCount === 0) return;
-    setConfirmBulkDelete(true);
-  };
-
-  const performBulkDelete = async () => {
-    setConfirmBulkDelete(false);
-    setIsDeleting(true);
-    try {
-      const currentDB = getDB();
-      const purchasesToDelete = visibleData.filter((p) => selectedIds.includes(p.id));
-      
-      for (const purchase of purchasesToDelete) {
-        const itemsToRevert = purchase.items || [{
-          productId: purchase.productId,
-          quantity: purchase.quantity,
-          batchNumber: purchase.batchNumber,
-          totalCost: purchase.totalCost,
-        }];
-
-        for (const item of itemsToRevert) {
-          if (!item.productId) continue;
-
-          const inventoryItem = await currentDB.inventory.where('productId').equals(item.productId).first();
-          if (inventoryItem && inventoryItem.id) {
-            const updatedQuantity = Math.max(0, inventoryItem.quantity - item.quantity);
-            await currentDB.inventory.update(inventoryItem.id, { quantity: updatedQuantity, lastUpdated: new Date().toISOString() });
-          }
-
-          if (item.batchNumber) {
-            const allBatches = await currentDB.productBatches.where('productId').equals(item.productId).toArray();
-            const batchItem = allBatches.find(b => b.batchNumber === item.batchNumber);
-            if (batchItem && batchItem.id) {
-              const updatedQuantity = Math.max(0, batchItem.quantity - item.quantity);
-              await currentDB.productBatches.update(batchItem.id, { quantity: updatedQuantity });
-            }
-          }
-        }
-        
-        if (purchase.supplierId) {
-          await currentDB.supplierLedger.add({
-            supplierId: purchase.supplierId,
-            type: 'charge_reversal',
-            amount: purchase.totalAmount || purchase.totalCost,
-            description: `Reversal of deleted invoice #${purchase.purchaseNumber || purchase.id}`,
-            date: new Date().toISOString(),
-          });
-          if (purchase.paidAmount || purchase.amountPaid) {
-            await currentDB.supplierLedger.add({
-              supplierId: purchase.supplierId,
-              type: 'payment_reversal',
-              amount: purchase.paidAmount || purchase.amountPaid,
-              description: `Reversal of payment for deleted invoice #${purchase.purchaseNumber || purchase.id}`,
-              date: new Date().toISOString(),
-            });
-          }
-        }
-      }
-      
-      await currentDB.purchases.bulkDelete(selectedIds);
-      
-      refreshPurchases();
-      clearSelection();
-      
-      const affectedProductIds = [...new Set(
-        purchasesToDelete.flatMap(p => (p.items || [p]).map(i => i.productId)).filter(Boolean)
-      )];
-      
-      await Promise.all(affectedProductIds.map(async (productId) => {
-        const allHistory = await currentDB.priceHistory.where('productId').equals(productId).toArray();
-        const purchaseHistory = allHistory.filter(h => h.type === 'purchase');
-        if (purchaseHistory.length > 0) {
-          const totalCostAmt = purchaseHistory.reduce((s, h) => s + ((h.purchasePrice || 0) * (h.quantity || 1)), 0);
-          const totalQtyAmt = purchaseHistory.reduce((s, h) => s + (h.quantity || 1), 0);
-          const newWac = totalQtyAmt > 0 ? totalCostAmt / totalQtyAmt : 0;
-          await currentDB.products.update(productId, { costPrice: newWac });
-        } else {
-          await currentDB.products.update(productId, { costPrice: 0 });
-        }
-      }));
-      
-      clearSelection();
-      clearPaginationCache('inventory');
-      clearPaginationCache('suppliers');
-      clearPaginationCache('purchases');
-      forceRepaintAfterRender();
-    } catch (error) {
-      console.error('Delete error:', error);
-    } finally {
-      setIsDeleting(false);
-    }
-  };
+      if (!purchase.id) return;
+      try {
+        const res = await fetch('/api/purchases/' + purchase.id, { method: 'DELETE' });
+        if (!res.ok) throw new Error('Failed to delete purchase');
+        if (typeof refresh === 'function') refresh();
+      } catch (err) { console.error(err); }
+    };
 
   return (
     <div className="space-y-6">
@@ -1316,26 +1031,7 @@ export default function Purchases() {
 
         <PrintWrapper title="Purchase Report" printLabel="Purchase Report">
           {useMemo(() => {
-            const totalPages = Math.max(1, Math.ceil((totalCount || 0) / limit));
             
-            const getPageNumbers = () => {
-              const pages = [];
-              if (totalPages <= 5) {
-                for (let i = 1; i <= totalPages; i++) pages.push(i);
-              } else {
-                if (currentPage <= 3) {
-                  pages.push(1, 2, 3, 4, '...', totalPages);
-                } else if (currentPage >= totalPages - 2) {
-                  pages.push(1, '...', totalPages - 3, totalPages - 2, totalPages - 1, totalPages);
-                } else {
-                  pages.push(1, '...', currentPage - 1, currentPage, currentPage + 1, '...', totalPages);
-                }
-              }
-              return pages;
-            };
-
-            const startItem = totalCount === 0 ? 0 : (currentPage - 1) * limit + 1;
-            const endItem = Math.min(currentPage * limit, totalCount || 0);
 
             const tableColumns = [
               {
@@ -1365,7 +1061,25 @@ export default function Purchases() {
                 <GlobalTable
                   data={visibleData}
                   columns={tableColumns}
-                  renderRow={(purchase, virtualIndex, measureRef) => {
+                  renderRow={(purchase, virtualIndex, measureRef) => {    if (!purchase) {
+      return (
+        <tr key={virtualIndex} data-index={virtualIndex} ref={measureRef} className="animate-pulse bg-slate-50">
+          <td className="p-4 border-b border-slate-100" colSpan={10}>
+            <div className="h-4 bg-slate-200 rounded w-full max-w-sm mb-2"></div>
+            <div className="h-3 bg-slate-100 rounded w-full max-w-xs"></div>
+          </td>
+        </tr>
+      );
+    }    if (!purchase) {
+      return (
+        <tr key={virtualIndex} data-index={virtualIndex} ref={measureRef} className="animate-pulse bg-slate-50">
+          <td className="p-4 border-b border-slate-100" colSpan={10}>
+            <div className="h-4 bg-slate-200 rounded w-full max-w-sm mb-2"></div>
+            <div className="h-3 bg-slate-100 rounded w-full max-w-xs"></div>
+          </td>
+        </tr>
+      );
+    }
                     const rowBg = virtualIndex % 2 === 0 ? 'bg-white' : 'bg-slate-50/50';
                     
                     return (
@@ -1424,7 +1138,9 @@ export default function Purchases() {
                     </tr>
                   );
                   }}
-                  emptyState={
+                  hasMore={false}
+          onRangeChange={handleRangeChange}
+          emptyState={
                     <div className="p-8 text-center text-slate-500">
                       No purchases found.
                     </div>
@@ -1509,8 +1225,8 @@ export default function Purchases() {
           ref={modalRef}
           currency={currency}
           onSuccess={(type, purchase) => {
-            clearPaginationCache('suppliers');
-            clearPaginationCache('purchases');
+            
+            
             refreshPurchases();
             forceRepaintAfterRender();
             viewInvoice(purchase);
