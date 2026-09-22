@@ -918,32 +918,20 @@ export default function Purchases() {
     load();
   }, []);
 
-  const queryBuilder = useCallback((db) => {
-    let query = db.purchases.reverse();
-    if (debouncedHistorySearchQuery) {
-      const term = debouncedHistorySearchQuery.toLowerCase();
-      const cleanIdTerm = term.replace(/^#/, ''); // Remove # if user typed it
-      query = query.filter((p) => {
-        const idMatch = p.purchaseNumber ? p.purchaseNumber.toLowerCase().includes(term) : (p.id ? p.id.toString().includes(cleanIdTerm) : false);
-        const dateMatch = p.date ? new Date(p.date).toLocaleDateString('en-PK', { day: 'numeric', month: 'short', year: 'numeric' }).toLowerCase().includes(term) : false;
-        const supplierMatch = p.supplierId && matchedSuppliers && matchedSuppliers.includes(p.supplierId);
-        return idMatch || dateMatch || supplierMatch;
-      });
-    }
-
-    return query;
-  }, [debouncedHistorySearchQuery, matchedSuppliers]);
-
   const [limit, setLimit] = useState(20);
-  const [currentPage, setCurrentPage] = useState(1);
-  useEffect(() => { setCurrentPage(1); }, [debouncedHistorySearchQuery, limit, matchedSuppliers]);
+  const { data: visibleData, totalItems: totalCount, fetchPage, pageSize, refresh } = useSparsePagination({
+    endpoint: '/api/purchases',
+    pageSize: limit,
+    search: debouncedHistorySearchQuery
+  });
 
-  const { data: visibleData, totalCount, isLoading, refresh: refreshPurchases } = useDexieOffsetPagination(
-    queryBuilder,
-    [debouncedHistorySearchQuery, matchedSuppliers],
-    currentPage,
-    limit
-  );
+  const handleRangeChange = useCallback(({ startIndex, endIndex }) => {
+    const startPage = Math.floor(startIndex / pageSize);
+    const endPage = Math.floor(endIndex / pageSize);
+    for (let p = startPage; p <= endPage; p++) {
+      fetchPage(p);
+    }
+  }, [fetchPage, pageSize]);
 
   const [stats, setStats] = useState({ totalSpent: 0, totalOutstanding: 0 });
 
