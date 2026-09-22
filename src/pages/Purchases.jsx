@@ -954,7 +954,11 @@ export default function Purchases() {
 
   const openNewPurchase = () => modalRef.current?.openNew();
 
-    const performBulkDelete = async () => {
+      const deleteSelected = () => {
+    setConfirmBulkDelete(true);
+  };
+
+const performBulkDelete = async () => {
     if (selectedIds.length === 0) return;
     setConfirmBulkDelete(false);
     setIsDeleting(true);
