@@ -1058,16 +1058,8 @@ export default function Purchases() {
           </td>
         </tr>
       );
-    }    if (!purchase) {
-      return (
-        <tr key={virtualIndex} data-index={virtualIndex} ref={measureRef} className="animate-pulse bg-slate-50">
-          <td className="p-4 border-b border-slate-100" colSpan={10}>
-            <div className="h-4 bg-slate-200 rounded w-full max-w-sm mb-2"></div>
-            <div className="h-3 bg-slate-100 rounded w-full max-w-xs"></div>
-          </td>
-        </tr>
-      );
     }
+
                     const rowBg = virtualIndex % 2 === 0 ? 'bg-white' : 'bg-slate-50/50';
                     
                     return (
@@ -1135,57 +1127,9 @@ export default function Purchases() {
                   }
                 />
                 
-                <div className="mt-4 flex flex-col sm:flex-row items-center justify-between gap-4 pt-4 border-t border-slate-200">
-                  <div className="flex items-center gap-4 text-xs text-slate-500">
-                    <div>
-                      Showing <span className="font-bold text-slate-700">{startItem}</span> to <span className="font-bold text-slate-700">{endItem}</span> of <span className="font-bold text-slate-700">{totalCount || 0}</span> items
-                    </div>
-                    <div className="h-3 w-px bg-slate-200"></div>
-                    <div className="flex items-center gap-2">
-                      <span>Rows:</span>
-                      <RowsDropdown limit={limit} setLimit={setLimit} />
-                    </div>
-                    {isLoading && <span className="ml-2 animate-pulse text-blue-500">Loading...</span>}
-                  </div>
-
-                  <div className="flex items-center rounded-lg border border-slate-200 bg-white p-1 shadow-sm text-sm font-medium text-slate-600">
-                    <button 
-                      onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
-                      disabled={currentPage === 1}
-                      className={`flex h-7 w-7 items-center justify-center rounded ${currentPage === 1 ? 'text-slate-300 cursor-not-allowed' : 'text-slate-600 hover:bg-slate-50 hover:text-blue-600'}`}
-                    >
-                      <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" /></svg>
-                    </button>
-                    
-                    {getPageNumbers().map((pageNum, idx) => (
-                      <button
-                        key={idx}
-                        disabled={pageNum === '...'}
-                        onClick={() => typeof pageNum === 'number' && setCurrentPage(pageNum)}
-                        className={`flex h-7 w-7 items-center justify-center rounded ${
-                          pageNum === '...' 
-                            ? 'text-slate-400 cursor-default' 
-                            : pageNum === currentPage 
-                              ? 'bg-blue-50 text-blue-600' 
-                              : 'hover:bg-slate-50'
-                        }`}
-                      >
-                        {pageNum}
-                      </button>
-                    ))}
-
-                    <button 
-                      onClick={() => setCurrentPage(prev => Math.min(totalPages, prev + 1))}
-                      disabled={currentPage === totalPages}
-                      className={`flex h-7 w-7 items-center justify-center rounded ${currentPage === totalPages ? 'text-slate-300 cursor-not-allowed' : 'text-slate-600 hover:bg-slate-50 hover:text-blue-600'}`}
-                    >
-                      <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
-                    </button>
-                  </div>
                 </div>
-              </div>
             );
-          }, [visibleData, currentPage, limit, totalCount, isLoading, isAllSelected, selectedIds])}
+          }, [visibleData, limit, totalCount, isAllSelected, selectedIds])}
         </PrintWrapper>
       </div>
 
