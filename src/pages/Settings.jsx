@@ -8,6 +8,8 @@ import { useSettings } from '@/hooks/useSettings';
 import { useBusiness } from '@/contexts/BusinessContext';
 
 import { forceRepaintAfterRender } from '@/lib/utils';
+import { api } from '@/lib/api';
+import { clearPaginationCache } from '@/hooks/useApiPagination';
 
 export default function Settings() {
   const navigate = useNavigate();
@@ -88,9 +90,11 @@ export default function Settings() {
   const handleReset = async () => {
     setConfirmClear(false);
     try {
-      await resetDatabase();
-      
+      await api.clearData();
+      clearPaginationCache();
       forceRepaintAfterRender();
+      alert('All shop data has been cleared successfully.');
+      window.location.reload();
     } catch (error) {
       console.error('Failed to reset database:', error);
       setResetError('Failed to reset database. Please try again.');

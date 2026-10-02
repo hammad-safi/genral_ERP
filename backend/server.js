@@ -1266,14 +1266,15 @@ app.delete('/api/categories/:id', async (req, res) => {
   }
 });
 
-// --- RESET ALL ---
-app.delete('/api/reset-all', async (req, res) => {
+// --- RESET ALL / CLEAR DATA ---
+app.all(['/api/reset-all', '/api/clear-data'], async (req, res) => {
   try {
-    // Truncate all known tables to completely wipe PostgreSQL data
-    await pool.query('TRUNCATE TABLE "Product", "Inventory", "Category", "Customer", "Supplier", "Sale", "Purchase", "ProductBatch", "PriceHistory", "SupplierLedger", "CustomerLedger", "Expense" CASCADE');
-    res.json({ message: 'All PostgreSQL tables cleared' });
+    // Truncate all shop tables to completely wipe data while keeping User & Role
+    await pool.query('TRUNCATE TABLE "Product", "Inventory", "Category", "Customer", "Supplier", "Sale", "Purchase", "ProductBatch", "PriceHistory", "SupplierLedger", "CustomerLedger", "Expense", "AuditLog" CASCADE');
+    res.json({ success: true, message: 'All shop data cleared successfully' });
   } catch (error) { 
-    { require('fs').appendFileSync('backend_error.log', new Date().toISOString() + ' ' + error.stack + '\n'); res.status(500).json({ error: error.message }); } 
+    require('fs').appendFileSync('backend_error.log', new Date().toISOString() + ' ' + error.stack + '\n');
+    res.status(500).json({ error: error.message }); 
   }
 });
 
