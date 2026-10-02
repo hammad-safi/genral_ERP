@@ -180,7 +180,7 @@ const AppLayout = ({ licenseStatus, setLicenseStatus }) => {
           </div>
         )}
         {!isLogin && <TopGlobalBar />}
-        <div className={(isLogin ? "w-full h-full" : (isPOS ? "w-full h-full flex-1" : "w-full px-4 sm:px-6 lg:px-8 py-6 flex-1")) + " overflow-y-auto"}>
+        <div id="main-scroll-container" className={(isLogin ? "w-full h-full" : (isPOS ? "w-full h-full flex-1" : "w-full px-4 sm:px-6 lg:px-8 py-6 flex-1")) + " overflow-y-auto"}>
           <BusinessRoutes />
         </div>
       </main>

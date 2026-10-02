@@ -1112,7 +1112,7 @@ export default function Purchases() {
 
 
   const [limit, setLimit] = useState(20);
-  const { data: visibleData, totalItems: totalCount, loading: isLoading, refresh: refreshPurchases, setPageIndex } = useApiPagination({
+  const { data: visibleData, totalItems: totalCount, loading: isLoading, refresh: refreshPurchases, setPageIndex, optimisticInsert } = useApiPagination({
     endpoint: '/api/purchases',
     pageSize: limit,
     search: debouncedHistorySearchQuery
@@ -1178,6 +1178,118 @@ const deletePurchase = async (purchase) => {
       } catch (err) { console.error(err); }
     };
 
+  const memoizedTable = useMemo(() => {
+    const tableColumns = [
+      {
+        header: (
+          <input
+            type="checkbox"
+            checked={isAllSelected}
+            onChange={toggleAll}
+            className="w-4 h-4 rounded cursor-pointer"
+          />
+        ),
+        className: "w-10",
+      },
+      { header: "Purchase #" },
+      { header: "Supplier" },
+      { header: "Date" },
+      { header: "Items" },
+      { header: "Total Amount" },
+      { header: "Paid" },
+      { header: "Due" },
+      { header: "Status" },
+      { header: "Action" },
+    ];
+
+    return (
+      <div className="mt-2">
+        <GlobalTable 
+          onLoadMore={() => setPageIndex(p => p + 1)} 
+          hasMore={visibleData.length < totalCount}
+          data={visibleData}
+          columns={tableColumns}
+          renderRow={(purchase, virtualIndex, measureRef) => {    
+            if (!purchase) {
+              return (
+                <tr key={virtualIndex} data-index={virtualIndex} ref={measureRef} className="animate-pulse bg-slate-50">
+                  <td className="p-4 border-b border-slate-100" colSpan={10}>
+                    <div className="h-4 bg-slate-200 rounded w-full max-w-sm mb-2"></div>
+                    <div className="h-3 bg-slate-100 rounded w-full max-w-xs"></div>
+                  </td>
+                </tr>
+              );
+            }
+
+            const rowBg = virtualIndex % 2 === 0 ? 'bg-white' : 'bg-slate-50/50';
+            
+            return (
+              <tr
+                key={purchase.id}
+                ref={measureRef}
+                data-index={virtualIndex}
+                className={`border-b border-slate-200 transition-colors ${isSelected(purchase.id) ? 'bg-red-50 hover:bg-red-100' : `hover:bg-slate-100 ${rowBg}`}`}
+              >
+                <td className="px-4 py-3">
+                  <input
+                    type="checkbox"
+                    checked={isSelected(purchase.id)}
+                    onChange={() => toggleOne(purchase.id)}
+                    className="w-4 h-4 rounded cursor-pointer"
+                  />
+                </td>
+                <td className="px-4 py-3 font-medium text-slate-900 text-sm">{purchase.purchaseNumber || `PUR-${String(purchase.id).padStart(4, '0')}`}</td>
+                <td className="px-4 py-3 font-medium text-slate-900 text-sm">{purchase.supplier || 'N/A'}</td>
+                <td className="px-4 py-3 text-sm">{formatDate(purchase.date)}</td>
+                <td className="px-4 py-3 text-sm font-semibold">{purchase.items ? purchase.items.length : 1}</td>
+                <td className="px-4 py-3 text-sm font-bold text-slate-900">{formatCurrency(purchase.totalAmount || purchase.totalCost, currency)}</td>
+                <td className="px-4 py-3 text-sm text-emerald-600 font-medium">{formatCurrency(purchase.paidAmount || purchase.amountPaid || 0, currency)}</td>
+                <td className="px-4 py-3 text-sm text-red-600 font-medium">{formatCurrency(purchase.dueAmount || ((purchase.totalAmount || purchase.totalCost) - (purchase.paidAmount || purchase.amountPaid || 0)), currency)}</td>
+                <td className="px-4 py-3 text-sm">
+                  <span className={`px-2 py-1 rounded-full text-[11px] font-bold ${
+                    (purchase.paymentStatus === 'Paid' || (purchase.paidAmount || purchase.amountPaid) >= (purchase.totalAmount || purchase.totalCost))
+                      ? 'bg-emerald-100 text-emerald-700' 
+                      : (purchase.paymentStatus === 'Partial' || (purchase.paidAmount || purchase.amountPaid) > 0)
+                        ? 'bg-amber-100 text-amber-700'
+                        : 'bg-red-100 text-red-700'
+                  }`}>
+                    {purchase.paymentStatus || ((purchase.paidAmount || purchase.amountPaid) >= (purchase.totalAmount || purchase.totalCost) ? 'Paid' : (purchase.paidAmount || purchase.amountPaid) > 0 ? 'Partial' : 'Unpaid')}
+                  </span>
+                </td>
+                <td className="px-4 py-3">
+                  <div className="flex justify-end gap-2 pr-2">
+                    <button
+                      type="button"
+                      onClick={() => viewInvoice(purchase)}
+                      className="rounded-lg border border-blue-200 bg-blue-50 p-2 text-blue-600 hover:bg-blue-100 transition-colors"
+                      title="View Invoice"
+                    >
+                      <BookOpen className="h-4 w-4" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setConfirmDeletePurchase(purchase)}
+                      className="rounded-lg border border-red-200 bg-red-50 p-2 text-red-600 hover:bg-red-100 transition-colors"
+                      title="Delete Purchase"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </button>
+                  </div>
+                </td>
+              </tr>
+            );
+          }}
+          onRangeChange={handleRangeChange}
+          emptyState={
+            <div className="p-8 text-center text-slate-500">
+              No purchases found.
+            </div>
+          }
+        />
+      </div>
+    );
+  }, [visibleData, limit, totalCount, isAllSelected, selectedIds, currency]);
+
   if (isPurchaseFormOpen) {
     return (
       <PurchaseInvoiceView
@@ -1185,6 +1297,9 @@ const deletePurchase = async (purchase) => {
         onClose={() => setIsPurchaseFormOpen(false)}
         onSuccess={(type, purchase) => {
           setIsPurchaseFormOpen(false);
+          if (purchase && optimisticInsert) {
+            optimisticInsert(purchase);
+          }
           refreshPurchases();
           forceRepaintAfterRender();
           if (purchase) viewInvoice(purchase);
@@ -1255,118 +1370,7 @@ const deletePurchase = async (purchase) => {
         </div>
 
         <PrintWrapper title="Purchase Report" printLabel="Purchase Report">
-          {useMemo(() => {
-            
-
-            const tableColumns = [
-              {
-                header: (
-                  <input
-                    type="checkbox"
-                    checked={isAllSelected}
-                    onChange={toggleAll}
-                    className="w-4 h-4 rounded cursor-pointer"
-                  />
-                ),
-                className: "w-10",
-              },
-              { header: "Purchase #" },
-              { header: "Supplier" },
-              { header: "Date" },
-              { header: "Items" },
-              { header: "Total Amount" },
-              { header: "Paid" },
-              { header: "Due" },
-              { header: "Status" },
-              { header: "Action" },
-            ];
-
-            return (
-              <div className="mt-2">
-                <GlobalTable onLoadMore={() => setPageIndex(p => p + 1)} hasMore={visibleData.length < totalCount}
-                  data={visibleData}
-                  columns={tableColumns}
-                  renderRow={(purchase, virtualIndex, measureRef) => {    if (!purchase) {
-      return (
-        <tr key={virtualIndex} data-index={virtualIndex} ref={measureRef} className="animate-pulse bg-slate-50">
-          <td className="p-4 border-b border-slate-100" colSpan={10}>
-            <div className="h-4 bg-slate-200 rounded w-full max-w-sm mb-2"></div>
-            <div className="h-3 bg-slate-100 rounded w-full max-w-xs"></div>
-          </td>
-        </tr>
-      );
-    }
-
-                    const rowBg = virtualIndex % 2 === 0 ? 'bg-white' : 'bg-slate-50/50';
-                    
-                    return (
-                    <tr
-                      key={purchase.id}
-                      ref={measureRef}
-                      data-index={virtualIndex}
-                      className={`border-b border-slate-200 transition-colors ${isSelected(purchase.id) ? 'bg-red-50 hover:bg-red-100' : `hover:bg-slate-100 ${rowBg}`}`}
-                    >
-                      <td className="px-4 py-3">
-                        <input
-                          type="checkbox"
-                          checked={isSelected(purchase.id)}
-                          onChange={() => toggleOne(purchase.id)}
-                          className="w-4 h-4 rounded cursor-pointer"
-                        />
-                      </td>
-                      <td className="px-4 py-3 font-medium text-slate-900 text-sm">{purchase.purchaseNumber || `PUR-${String(purchase.id).padStart(4, '0')}`}</td>
-                      <td className="px-4 py-3 font-medium text-slate-900 text-sm">{purchase.supplier || 'N/A'}</td>
-                      <td className="px-4 py-3 text-sm">{formatDate(purchase.date)}</td>
-                      <td className="px-4 py-3 text-sm font-semibold">{purchase.items ? purchase.items.length : 1}</td>
-                      <td className="px-4 py-3 text-sm font-bold text-slate-900">{formatCurrency(purchase.totalAmount || purchase.totalCost, currency)}</td>
-                      <td className="px-4 py-3 text-sm text-emerald-600 font-medium">{formatCurrency(purchase.paidAmount || purchase.amountPaid || 0, currency)}</td>
-                      <td className="px-4 py-3 text-sm text-red-600 font-medium">{formatCurrency(purchase.dueAmount || ((purchase.totalAmount || purchase.totalCost) - (purchase.paidAmount || purchase.amountPaid || 0)), currency)}</td>
-                      <td className="px-4 py-3 text-sm">
-                        <span className={`px-2 py-1 rounded-full text-[11px] font-bold ${
-                          (purchase.paymentStatus === 'Paid' || (purchase.paidAmount || purchase.amountPaid) >= (purchase.totalAmount || purchase.totalCost))
-                            ? 'bg-emerald-100 text-emerald-700' 
-                            : (purchase.paymentStatus === 'Partial' || (purchase.paidAmount || purchase.amountPaid) > 0)
-                              ? 'bg-amber-100 text-amber-700'
-                              : 'bg-red-100 text-red-700'
-                        }`}>
-                          {purchase.paymentStatus || ((purchase.paidAmount || purchase.amountPaid) >= (purchase.totalAmount || purchase.totalCost) ? 'Paid' : (purchase.paidAmount || purchase.amountPaid) > 0 ? 'Partial' : 'Unpaid')}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3">
-                        <div className="flex justify-end gap-2 pr-2">
-                          <button
-                            type="button"
-                            onClick={() => viewInvoice(purchase)}
-                            className="rounded-lg border border-blue-200 bg-blue-50 p-2 text-blue-600 hover:bg-blue-100 transition-colors"
-                            title="View Invoice"
-                          >
-                            <BookOpen className="h-4 w-4" />
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setConfirmDeletePurchase(purchase)}
-                            className="rounded-lg border border-red-200 bg-red-50 p-2 text-red-600 hover:bg-red-100 transition-colors"
-                            title="Delete Purchase"
-                          >
-                            <Trash2 className="h-4 w-4" />
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                  }}
-                  
-          onRangeChange={handleRangeChange}
-          emptyState={
-                    <div className="p-8 text-center text-slate-500">
-                      No purchases found.
-                    </div>
-                  }
-                />
-                
-                </div>
-            );
-          }, [visibleData, limit, totalCount, isAllSelected, selectedIds])}
+          {memoizedTable}
         </PrintWrapper>
       </div>
 

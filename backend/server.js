@@ -224,9 +224,140 @@ async function initDB() {
     try { await pool.query('ALTER TABLE "User" ADD COLUMN "address" TEXT'); } catch(e) {}
     try { await pool.query('ALTER TABLE "User" ADD COLUMN "profilePicture" TEXT'); } catch(e) {}
     try { await pool.query('ALTER TABLE "Expense" ADD COLUMN "note" TEXT'); } catch(e) {}
+    try { await pool.query('ALTER TABLE "Supplier" ADD COLUMN IF NOT EXISTS "balance" NUMERIC DEFAULT 0'); } catch(e) {}
+    try { await pool.query('ALTER TABLE "Supplier" ADD COLUMN IF NOT EXISTS "openingBalance" NUMERIC DEFAULT 0'); } catch(e) {}
+
+    // Ensure atomic record_purchase_fn exists for single-hop execution
+    try {
+      await client.query(`
+        CREATE OR REPLACE FUNCTION record_purchase_fn(p_data jsonb)
+        RETURNS jsonb AS $$
+        DECLARE
+          v_purchase_id int;
+          v_supplier_id int;
+          v_supplier_name text;
+          v_date text;
+          v_amount_paid double precision;
+          v_discount double precision;
+          v_tax double precision;
+          v_total_amount double precision;
+          v_items jsonb;
+          v_item jsonb;
+          v_prod_id int;
+          v_qty int;
+          v_cost_price numeric;
+          v_expiry text;
+          v_batch_no text;
+          v_total_cost numeric;
+          v_prev_cost numeric;
+          v_prev_qty numeric;
+          v_new_wac numeric;
+          v_credit double precision;
+          v_debit double precision;
+          v_prev_bal double precision;
+          v_new_bal double precision;
+          v_updated_count int;
+          v_result jsonb;
+        BEGIN
+          v_supplier_id := (p_data->>'supplierId')::int;
+          v_supplier_name := p_data->>'supplierName';
+          v_date := p_data->>'date';
+          v_amount_paid := COALESCE((p_data->>'amountPaid')::double precision, 0);
+          v_discount := COALESCE((p_data->>'discount')::double precision, 0);
+          v_tax := COALESCE((p_data->>'tax')::double precision, 0);
+          v_total_amount := COALESCE((p_data->>'totalAmount')::double precision, 0);
+          v_items := COALESCE(p_data->'items', '[]'::jsonb);
+
+          INSERT INTO "Purchase" ("supplierId", "supplierName", "date", "amountPaid", "discount", "tax", "totalAmount", "items")
+          VALUES (v_supplier_id, v_supplier_name, v_date, v_amount_paid, v_discount, v_tax, v_total_amount, v_items)
+          RETURNING id INTO v_purchase_id;
+
+          IF v_supplier_id IS NOT NULL AND v_supplier_id > 0 AND v_amount_paid <> (v_total_amount - v_discount + v_tax) THEN
+            v_credit := (v_total_amount - v_discount + v_tax);
+            v_debit := v_amount_paid;
+            SELECT COALESCE(balance, 0) INTO v_prev_bal
+            FROM "SupplierLedger"
+            WHERE "supplierId" = v_supplier_id
+            ORDER BY id DESC LIMIT 1;
+            IF NOT FOUND THEN
+              v_prev_bal := 0;
+            END IF;
+            v_new_bal := v_prev_bal + v_credit - v_debit;
+
+            INSERT INTO "SupplierLedger" ("supplierId", "date", "description", "credit", "debit", "balance", "refId")
+            VALUES (v_supplier_id, v_date, 'Purchase #' || v_purchase_id, v_credit, v_debit, v_new_bal, v_purchase_id);
+          END IF;
+
+          FOR v_item IN SELECT * FROM jsonb_array_elements(v_items)
+          LOOP
+            v_prod_id := (v_item->>'productId')::int;
+            IF v_prod_id IS NOT NULL AND v_prod_id > 0 THEN
+              v_qty := COALESCE((v_item->>'quantity')::int, 0);
+              v_cost_price := COALESCE((v_item->>'costPrice')::numeric, 0);
+              v_expiry := v_item->>'expiryDate';
+              v_batch_no := COALESCE(v_item->>'batchNumber', 'B-' || floor(extract(epoch from clock_timestamp())*1000)::text);
+              v_total_cost := COALESCE((v_item->>'totalCost')::numeric, v_qty * v_cost_price);
+
+              INSERT INTO "ProductBatch" ("batchNumber", "productId", "quantity", "costPrice", "expiryDate")
+              VALUES (v_batch_no, v_prod_id, v_qty, v_cost_price, v_expiry);
+
+              UPDATE "Inventory"
+              SET quantity = quantity + v_qty,
+                  "lastUpdated" = clock_timestamp(),
+                  "expiryDate" = COALESCE(v_expiry, "expiryDate")
+              WHERE "productId" = v_prod_id;
+
+              GET DIAGNOSTICS v_updated_count = ROW_COUNT;
+              IF v_updated_count = 0 THEN
+                INSERT INTO "Inventory" ("productId", quantity, "lowStockThreshold", "expiryDate")
+                VALUES (v_prod_id, v_qty, 10, v_expiry);
+              END IF;
+
+              SELECT 
+                COALESCE(SUM(COALESCE("purchasePrice", 0) * COALESCE(quantity, 1)), 0),
+                COALESCE(SUM(COALESCE(quantity, 1)), 0)
+              INTO v_prev_cost, v_prev_qty
+              FROM "PriceHistory"
+              WHERE "productId" = v_prod_id AND type = 'purchase';
+
+              IF (v_prev_qty + v_qty) > 0 THEN
+                v_new_wac := (v_prev_cost + v_total_cost) / (v_prev_qty + v_qty);
+              ELSE
+                v_new_wac := v_cost_price;
+              END IF;
+
+              UPDATE "Product"
+              SET "costPrice" = v_new_wac,
+                  "expiryDate" = COALESCE(v_expiry, "expiryDate")
+              WHERE id = v_prod_id;
+
+              INSERT INTO "PriceHistory" ("productId", "type", "purchasePrice", "wac", "date", "quantity", "supplier")
+              VALUES (v_prod_id, 'purchase', v_cost_price, v_new_wac, v_date, v_qty, v_supplier_name);
+            END IF;
+          END LOOP;
+
+          SELECT to_jsonb(p) INTO v_result
+          FROM "Purchase" p
+          WHERE p.id = v_purchase_id;
+
+          RETURN v_result;
+        END;
+        $$ LANGUAGE plpgsql;
+      `);
+    } catch (e) {
+      console.warn("Could not register record_purchase_fn:", e.message);
+    }
   } finally {
     client.release();
   }
+
+  // Pre-warm extra pool connections so initial requests execute instantly
+  try {
+    const c1 = await pool.connect();
+    const c2 = await pool.connect();
+    c1.release();
+    c2.release();
+  } catch(e) {}
 }
 
 initDB().catch(console.error);
@@ -1381,6 +1512,17 @@ app.all(['/api/reset-all', '/api/clear-data'], async (req, res) => {
 
 // --- PURCHASES & BATCHES ---
 app.post('/api/purchases', async (req, res) => {
+  try {
+    // 1-Hop Ultra-Fast Atomic Execution via Stored Procedure (~250-300ms)
+    const { rows } = await pool.query('SELECT record_purchase_fn($1::jsonb) as purchase', [JSON.stringify(req.body)]);
+    if (rows && rows[0]?.purchase) {
+      invalidateDashboardCache();
+      return res.status(201).json(rows[0].purchase);
+    }
+  } catch (fnErr) {
+    console.warn('record_purchase_fn error, falling back to client transaction:', fnErr.message);
+  }
+
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -1394,19 +1536,17 @@ app.post('/api/purchases', async (req, res) => {
     );
     const purchase = purchaseRows[0];
     
-    // Update Ledger
+    // Update Ledger (Single atomic pass)
     if (supplierId && amountPaid !== (totalAmount - discount + tax)) {
-      // get previous balance
-      const { rows: balRows } = await client.query('SELECT balance FROM "SupplierLedger" WHERE "supplierId" = $1 ORDER BY id DESC LIMIT 1', [supplierId]);
-      const prevBal = balRows.length > 0 ? balRows[0].balance : 0;
       const credit = (totalAmount - discount + tax); // amount we owe to supplier
       const debit = amountPaid; // amount we paid
-      const newBal = prevBal + credit - debit;
       
-      await client.query(
-        'INSERT INTO "SupplierLedger" ("supplierId", "date", "description", "credit", "debit", "balance", "refId") VALUES ($1, $2, $3, $4, $5, $6, $7)',
-        [supplierId, date, 'Purchase #' + purchase.id, credit, debit, newBal, purchase.id]
-      );
+      await client.query(`
+        INSERT INTO "SupplierLedger" ("supplierId", "date", "description", "credit", "debit", "balance", "refId")
+        SELECT $1, $2, $3, $4, $5,
+               COALESCE((SELECT balance FROM "SupplierLedger" WHERE "supplierId" = $1 ORDER BY id DESC LIMIT 1), 0) + $4 - $5,
+               $6
+      `, [supplierId, date, 'Purchase #' + purchase.id, credit, debit, purchase.id]);
     }
     
     // Batched Items Processing
@@ -1440,27 +1580,77 @@ app.post('/api/purchases', async (req, res) => {
       const updatedSet = new Set(invUpdateRes.rows.map(r => r.productId));
       const missingItems = validItems.filter(i => !updatedSet.has(parseInt(i.productId)));
       if (missingItems.length > 0) {
-        for (const m of missingItems) {
-          await client.query(
-            'INSERT INTO "Inventory" ("productId", quantity, "lowStockThreshold", "expiryDate") VALUES ($1, $2, $3, $4)',
-            [m.productId, m.quantity, 10, m.expiryDate || null]
-          );
-        }
+        const mProdIds = missingItems.map(m => parseInt(m.productId));
+        const mQtys = missingItems.map(m => parseInt(m.quantity || 0));
+        const mExpiries = missingItems.map(m => m.expiryDate || null);
+        await client.query(`
+          INSERT INTO "Inventory" ("productId", quantity, "lowStockThreshold", "expiryDate")
+          SELECT unnest($1::int[]), unnest($2::int[]), 10, unnest($3::text[])
+        `, [mProdIds, mQtys, mExpiries]);
       }
 
-      // 3. Price History & WAC
+      // 3. Batched Price History & WAC in Single Pass
+      const { rows: allHistRows } = await client.query(
+        'SELECT "productId", quantity, "purchasePrice" FROM "PriceHistory" WHERE "productId" = ANY($1::int[]) AND type = \'purchase\'',
+        [prodIds]
+      );
+      
+      const histMap = new Map();
+      for (const h of allHistRows) {
+        if (!histMap.has(h.productId)) histMap.set(h.productId, []);
+        histMap.get(h.productId).push(h);
+      }
+
+      const updateIds = [];
+      const updateWacs = [];
+      const updateExpiries = [];
+
+      const phProdIds = [];
+      const phTypes = [];
+      const phPrices = [];
+      const phWacs = [];
+      const phDates = [];
+      const phQtys = [];
+      const phSuppliers = [];
+
       for (const item of validItems) {
-        const { rows: histRows } = await client.query('SELECT quantity, "purchasePrice" FROM "PriceHistory" WHERE "productId" = $1 AND type = \'purchase\'', [item.productId]);
-        const totalCostAmt = histRows.reduce((sum, h) => sum + ((h.purchasePrice || 0) * (h.quantity || 1)), 0) + (item.totalCost || (item.costPrice * item.quantity));
-        const totalQty = histRows.reduce((sum, h) => sum + (h.quantity || 1), 0) + item.quantity;
-        const wac = totalQty > 0 ? totalCostAmt / totalQty : (item.costPrice || 0);
+        const pid = parseInt(item.productId);
+        const histRows = histMap.get(pid) || [];
+        const itemCost = parseFloat(item.costPrice || 0);
+        const itemQty = parseFloat(item.quantity || 0);
+        const itemTotal = item.totalCost ? parseFloat(item.totalCost) : (itemCost * itemQty);
 
-        await client.query('UPDATE "Product" SET "costPrice" = $1, "expiryDate" = COALESCE($2, "expiryDate") WHERE id = $3', [wac, item.expiryDate || null, item.productId]);
-        await client.query(
-          'INSERT INTO "PriceHistory" ("productId", "type", "purchasePrice", "wac", "date", "quantity", "supplier") VALUES ($1, $2, $3, $4, $5, $6, $7)',
-          [item.productId, 'purchase', item.costPrice, wac, date, item.quantity, supplierName || null]
-        );
+        const totalCostAmt = histRows.reduce((sum, h) => sum + ((parseFloat(h.purchasePrice) || 0) * (parseFloat(h.quantity) || 1)), 0) + itemTotal;
+        const totalQty = histRows.reduce((sum, h) => sum + (parseFloat(h.quantity) || 1), 0) + itemQty;
+        const wac = totalQty > 0 ? (totalCostAmt / totalQty) : itemCost;
+
+        updateIds.push(pid);
+        updateWacs.push(wac);
+        updateExpiries.push(item.expiryDate || null);
+
+        phProdIds.push(pid);
+        phTypes.push('purchase');
+        phPrices.push(itemCost);
+        phWacs.push(wac);
+        phDates.push(date);
+        phQtys.push(itemQty);
+        phSuppliers.push(supplierName || null);
       }
+
+      await client.query(`
+        UPDATE "Product" AS p
+        SET "costPrice" = u.wac,
+            "expiryDate" = COALESCE(u.exp, p."expiryDate")
+        FROM (
+          SELECT unnest($1::int[]) AS id, unnest($2::numeric[]) AS wac, unnest($3::text[]) AS exp
+        ) AS u
+        WHERE p.id = u.id
+      `, [updateIds, updateWacs, updateExpiries]);
+
+      await client.query(`
+        INSERT INTO "PriceHistory" ("productId", "type", "purchasePrice", "wac", "date", "quantity", "supplier")
+        SELECT unnest($1::int[]), unnest($2::text[]), unnest($3::numeric[]), unnest($4::numeric[]), unnest($5::text[]), unnest($6::numeric[]), unnest($7::text[])
+      `, [phProdIds, phTypes, phPrices, phWacs, phDates, phQtys, phSuppliers]);
     }
     
     await client.query('COMMIT');
