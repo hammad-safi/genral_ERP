@@ -19,6 +19,7 @@ export function useApiPagination({ endpoint, pageSize = 20, dependencies = [], s
   const [error, setError] = useState(null);
   const [pageIndex, setPageIndex] = useState(0);
   const [totalItems, setTotalItems] = useState(0);
+  const [summary, setSummary] = useState(null);
   
   // Support both internal search state and external search prop
   const [internalSearch, setInternalSearch] = useState('');
@@ -44,6 +45,7 @@ export function useApiPagination({ endpoint, pageSize = 20, dependencies = [], s
       if (!force && globalCache[cacheKey]) {
         setData(globalCache[cacheKey].data);
         setTotalItems(globalCache[cacheKey].total);
+        setSummary(globalCache[cacheKey].summary || null);
         setLoading(false);
         return;
       }
@@ -56,7 +58,8 @@ export function useApiPagination({ endpoint, pageSize = 20, dependencies = [], s
       
       globalCache[cacheKey] = {
         data: result.data || [],
-        total: result.total || 0
+        total: result.total || 0,
+        summary: result.summary || null
       };
 
       if (mode === 'infinite' && pageIndex > 0) {
@@ -70,6 +73,7 @@ export function useApiPagination({ endpoint, pageSize = 20, dependencies = [], s
         setData(result.data || []);
       }
       setTotalItems(result.total || 0);
+      setSummary(result.summary || null);
       setError(null);
     } catch (err) {
       console.error('Pagination Error:', err);
@@ -101,6 +105,7 @@ export function useApiPagination({ endpoint, pageSize = 20, dependencies = [], s
     totalPages: Math.ceil(totalItems / pageSize),
     search,
     setSearch: setInternalSearch,
+    summary,
     refresh
   };
 }

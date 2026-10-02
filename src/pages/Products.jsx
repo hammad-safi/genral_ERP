@@ -9,6 +9,7 @@ import PaginationFooter from '@/components/PaginationFooter';
 import ImageUpload from '@/components/ImageUpload';
 import ConfirmDialog from '@/components/ConfirmDialog';
 import BulkDeleteBar from '@/components/BulkDeleteBar';
+import ProductFormView from '@/components/ProductFormView';
 
 import { DEFAULT_IMAGE, formatCurrency, forceRepaintAfterRender, removeLeadingZeros } from '@/lib/utils';
 import { useSettings } from '@/hooks/useSettings';
@@ -149,6 +150,9 @@ const ProductFormModal = memo(forwardRef(({ currency, categories = [], onSuccess
     const barcodeValue = form.barcode?.trim() ?? '';
     const shouldGenerateBarcode = !barcodeValue && !selectedProduct?.barcode;
     let finalBarcode = barcodeValue || selectedProduct?.barcode || '';
+    if (shouldGenerateBarcode) {
+      finalBarcode = `${Date.now()}`;
+    }
     
     // Exclude costPrice from productData as it's managed by purchase WAC calculation
     const { costPrice, ...formDataWithoutCost } = form;
@@ -160,21 +164,11 @@ const ProductFormModal = memo(forwardRef(({ currency, categories = [], onSuccess
 
     if (selectedProduct?.id) {
       await api.updateProduct(selectedProduct.id, productData);
-      if (shouldGenerateBarcode) {
-        finalBarcode = `${Date.now()}`;
-        await api.updateProduct(selectedProduct.id, { barcode: finalBarcode });
-      }
       onSuccess('update', { ...productData, barcode: finalBarcode, id: selectedProduct.id });
     } else {
       const createdProduct = await api.createProduct(productData);
-        const id = createdProduct.id;
-        let savedBarcode = finalBarcode;
-      if (shouldGenerateBarcode) {
-        savedBarcode = `${Date.now()}`;
-        await api.updateProduct(id, { barcode: savedBarcode });
-      }
-      
-      onSuccess('add', { ...productData, id, barcode: savedBarcode });
+      const id = createdProduct?.id;
+      onSuccess('add', { ...productData, ...createdProduct, id, barcode: finalBarcode });
     }
     
     if (addAnother) {
@@ -821,11 +815,12 @@ const ProductFormModal = memo(forwardRef(({ currency, categories = [], onSuccess
 
 export default function Products() {
   const modalRef = useRef(null);
+  const [isFormOpen, setIsFormOpen] = useState(false);
+  const [selectedProductForForm, setSelectedProductForForm] = useState(null);
   const { businessColor } = useBusiness();
   const settings = useSettings();
   const currency = settings?.currency ?? 'Rs';
 
-  const [inventory, setInventory] = useState(new Map());
   const [stats, setStats] = useState({ total: 0, healthy: 0, low: 0, nearExpiry: 0, healthyPercent: '0.0' });
 
   const [categoriesList, setCategoriesList] = useState([]);
@@ -886,131 +881,38 @@ export default function Products() {
     );
   }, []);
 
-  useEffect(() => {
-    const load = async () => {
-        const res = await fetch('/api/inventory');
-        const data = await res.json();
-        setInventory(data.data || data || []);
-      };
-      load();
-  }, []);
-
-  const inventoryMap = useMemo(() => {
-    const map = new Map();
-    for (let i = 0; i < inventory.length; i++) {
-      map.set(inventory[i].productId, inventory[i]);
-    }
-    return map;
-  }, [inventory]);
-
-  const queryBuilder = useCallback((db) => {
-    
-    
-    query = query.filter(p => {
-      if (debouncedSearch) {
-        const term = debouncedSearch.toLowerCase();
-        const nameMatch = p.name?.toLowerCase().includes(term);
-        const barcodeMatch = p.barcode?.toLowerCase().includes(term);
-        if (!nameMatch && !barcodeMatch) return false;
-      }
-
-      if (categoryFilter !== 'All') {
-        // If the product matches exact category
-        let matches = p.category === categoryFilter || p.category === Number(categoryFilter);
-        
-        // If not exact, check if product category is a descendant of the selected category filter
-        if (!matches) {
-          let currId = p.category;
-          let safeCount = 0;
-          while (currId && safeCount < 20) {
-            const cat = categoriesList.find(c => c.id === currId || c.id === Number(currId));
-            if (!cat) break;
-            if (cat.parentId === categoryFilter || cat.parentId === Number(categoryFilter) || Number(cat.parentId) === Number(categoryFilter)) {
-              matches = true;
-              break;
-            }
-            currId = cat.parentId;
-            safeCount++;
-          }
-        }
-        if (!matches) return false;
-      }
-      
-      if (stockFilter === 'low') {
-        const inv = inventoryMap.get(p.id);
-        const qty = inv?.quantity ?? 0;
-        const threshold = p.lowStockThreshold || 10;
-        if (qty > threshold) return false;
-      }
-      
-      if (expiryFilter === 'near') {
-        if (!p.expiryDate) return false;
-        const daysToExpiry = (new Date(p.expiryDate) - new Date()) / (1000 * 60 * 60 * 24);
-        if (daysToExpiry > 60 || daysToExpiry < 0) return false;
-      }
-      
-      return true;
-    });
-    
-    return query;
-  }, [debouncedSearch, categoryFilter, stockFilter, expiryFilter, inventoryMap, categoriesList]);
-
   const [limit, setLimit] = useState(25);
-  
-  
-  // Reset page to 1 when filters or search change
-  
 
-  const { data: visibleData, totalItems: totalCount, loading: isLoading, refresh, setPageIndex, pageIndex, totalPages } = useApiPagination({
-  endpoint: `/api/products?category=${categoryFilter !== 'All' ? categoryFilter : ''}&stock=${stockFilter}&expiry=${expiryFilter}`,
-  pageSize: limit,
-  search: debouncedSearch,
-  category: categoryFilter,
-  mode: 'infinite'
-});
+  const { data: visibleData, totalItems: totalCount, loading: isLoading, refresh, setPageIndex, pageIndex, totalPages, summary } = useApiPagination({
+    endpoint: `/api/products?category=${categoryFilter !== 'All' ? categoryFilter : ''}&stock=${stockFilter}&expiry=${expiryFilter}`,
+    pageSize: limit,
+    search: debouncedSearch,
+    category: categoryFilter,
+    mode: 'infinite'
+  });
 
-  const openNewProduct = () => modalRef.current?.openNew();
+  const openNewProduct = () => {
+    setSelectedProductForForm(null);
+    setIsFormOpen(true);
+  };
 
   useEffect(() => {
-    let isMounted = true;
-    const fetchStats = async () => {
-      try {
-        const invRes = await api.getInventory();
-        const inventoryData = invRes.data || [];
-        
-        let healthy = 0;
-        let low = 0;
-        let nearExpiry = 0;
-        const today = new Date();
-        const warningDays = Number(settings?.expiryWarningDays) || 30;
+    if (summary) {
+      const total = summary.total ?? totalCount;
+      const healthy = summary.healthy ?? 0;
+      const low = summary.low ?? 0;
+      const nearExpiry = summary.nearExpiry ?? 0;
+      const healthyPercent = total > 0 ? ((healthy / total) * 100).toFixed(1) : '0.0';
+      setStats({ total, healthy, low, nearExpiry, healthyPercent });
+    } else if (totalCount !== undefined) {
+      setStats(prev => ({ ...prev, total: totalCount }));
+    }
+  }, [summary, totalCount]);
 
-        for (const item of inventoryData) {
-          const qty = Number(item.quantity || 0);
-          const minQty = Number(item.minStockLevel || 10);
-          if (qty > minQty) healthy++;
-          else low++;
-
-          if (item.expiryDate) {
-            const exp = new Date(item.expiryDate);
-            const diffDays = Math.ceil((exp - today) / (1000 * 60 * 60 * 24));
-            if (diffDays <= warningDays) nearExpiry++;
-          }
-        }
-        
-        const total = totalCount;
-        const healthyPercent = total > 0 ? ((healthy / total) * 100).toFixed(1) : '0.0';
-
-        if (isMounted) {
-          setStats({ total, healthy, low, nearExpiry, healthyPercent });
-        }
-      } catch (error) {
-        console.error("Error fetching stats", error);
-      }
-    };
-    fetchStats();
-    return () => { isMounted = false; };
-  }, [totalCount, settings?.expiryWarningDays]);
-  const openEditProduct = (product) => modalRef.current?.openEdit(product);
+  const openEditProduct = (product) => {
+    setSelectedProductForForm(product);
+    setIsFormOpen(true);
+  };
 
   const removeProduct = async () => {
     if (!selectedProduct?.id) return;
@@ -1034,8 +936,6 @@ export default function Products() {
     // Force repaint after React DOM updates complete
     forceRepaintAfterRender();
   };
-
-  const productInventory = (productId) => inventoryMap.get(productId);
 
   // Toggle single product selection
   const toggleSelect = (id) => {
@@ -1206,7 +1106,7 @@ export default function Products() {
     const rowBg = virtualIndex % 2 === 0 ? 'bg-white' : 'bg-slate-50/40';
     const isSelected = selectedIds.includes(product.id);
     const rowNumber = virtualIndex + 1;
-    const stockQty = productInventory(product.id)?.quantity ?? 0;
+    const stockQty = product.stockQuantity ?? product.quantity ?? 0;
     const lowStockThreshold = product.lowStockThreshold || 10;
 
     return (
@@ -1351,7 +1251,7 @@ export default function Products() {
         />
       </div>
     );
-  }, [visibleData, selectedIds, selectAll, debouncedSearch, currency, inventory, totalCount, limit, isLoading, visibleCols]);
+  }, [visibleData, selectedIds, selectAll, debouncedSearch, currency, totalCount, limit, isLoading, visibleCols]);
 
 
 
@@ -1448,6 +1348,28 @@ export default function Products() {
     ));
   }, [visibleData, selectedIds, currency, showPrintLabels]);
 
+  if (isFormOpen) {
+    return (
+      <ProductFormView
+        currency={currency}
+        categories={categoriesList}
+        initialProduct={selectedProductForForm}
+        onClose={() => {
+          setIsFormOpen(false);
+          setSelectedProductForForm(null);
+        }}
+        onSuccess={async (mode, productData) => {
+          setIsFormOpen(false);
+          setSelectedProductForForm(null);
+          clearPaginationCache('products');
+          clearPaginationCache('inventory');
+          refresh(true);
+          forceRepaintAfterRender();
+        }}
+      />
+    );
+  }
+
   return (
     <div className="space-y-6">
       <PageHeader 
@@ -1514,22 +1436,6 @@ export default function Products() {
         {tableContent}
         {memoizedTable}
       </div>
-
-      <ProductFormModal 
-        ref={modalRef} 
-        currency={currency} 
-        categories={categoriesList}
-        onSuccess={async (mode, productData) => {
-          const res = await fetch('/api/inventory');
-            const data = await res.json();
-            setInventory(data.data || data || []);
-          
-          clearPaginationCache('products'); // Clear products cache so the new product is fetched
-          clearPaginationCache('inventory'); // Clear inventory cache so it reloads fresh
-          refresh(true);
-          forceRepaintAfterRender();
-        }} 
-      />
 
       {showPrintLabels && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-sm">

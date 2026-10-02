@@ -134,6 +134,11 @@ async function initDB() {
         "lastUpdated" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
         "expiryDate" TEXT
       );
+      CREATE INDEX IF NOT EXISTS "idx_inventory_product_id" ON "Inventory"("productId");
+      CREATE INDEX IF NOT EXISTS "idx_inventory_quantity" ON "Inventory"("quantity");
+      CREATE INDEX IF NOT EXISTS "idx_product_barcode" ON "Product"("barcode");
+      CREATE INDEX IF NOT EXISTS "idx_product_category" ON "Product"("category");
+      CREATE INDEX IF NOT EXISTS "idx_product_name" ON "Product"("name");
       CREATE TABLE IF NOT EXISTS "Category" (
         "id" SERIAL PRIMARY KEY,
         "name" TEXT NOT NULL,
@@ -581,25 +586,29 @@ app.get('/api/products', async (req, res) => {
       const expiry = req.query.expiry || '';
       const offset = page * limit;
   
-      let query = 'SELECT p.* FROM "Product" p';
-      let countQuery = 'SELECT COUNT(p.*) as total FROM "Product" p';
-      let joins = '';
+      let query = `
+        SELECT p.*, 
+          COALESCE(i.quantity, 0) as "stockQuantity", 
+          COALESCE(i.quantity, 0) as "currentStock",
+          COALESCE(i."lowStockThreshold", 10) as "lowStockThreshold"
+        FROM "Product" p
+        LEFT JOIN "Inventory" i ON i."productId" = p.id
+      `;
+      let countQuery = 'SELECT COUNT(p.id) as total FROM "Product" p LEFT JOIN "Inventory" i ON i."productId" = p.id';
       let params = [];
       let whereClauses = [];
   
       if (stock === 'low') {
-        joins += ' LEFT JOIN "Inventory" i ON i."productId" = p.id';
-        whereClauses.push('COALESCE(i.quantity, 0) <= COALESCE(p."lowStockThreshold", 10)');
+        whereClauses.push('COALESCE(i.quantity, 0) <= COALESCE(i."lowStockThreshold", 10)');
         whereClauses.push('COALESCE(i.quantity, 0) > 0');
       } else if (stock === 'out') {
-        joins += ' LEFT JOIN "Inventory" i ON i."productId" = p.id';
         whereClauses.push('COALESCE(i.quantity, 0) <= 0');
       }
 
       if (expiry === 'near') {
-        whereClauses.push('p."expiryDate" IS NOT NULL AND p."expiryDate" != \'\' AND p."expiryDate"::date <= CURRENT_DATE + interval \'30 days\' AND p."expiryDate"::date >= CURRENT_DATE');
+        whereClauses.push('p."expiryDate" IS NOT NULL AND p."expiryDate" ~ \'^\d{4}-\d{2}-\d{2}\' AND (p."expiryDate")::date <= CURRENT_DATE + interval \'30 days\' AND (p."expiryDate")::date >= CURRENT_DATE');
       } else if (expiry === 'expired') {
-        whereClauses.push('p."expiryDate" IS NOT NULL AND p."expiryDate" != \'\' AND p."expiryDate"::date < CURRENT_DATE');
+        whereClauses.push('p."expiryDate" IS NOT NULL AND p."expiryDate" ~ \'^\d{4}-\d{2}-\d{2}\' AND (p."expiryDate")::date < CURRENT_DATE');
       }
 
       if (search) {
@@ -618,11 +627,6 @@ app.get('/api/products', async (req, res) => {
           whereClauses.push('p."category" IN (' + catParams.join(', ') + ')');
         }
       }
-  
-      if (joins) {
-        query += joins;
-        countQuery += joins;
-      }
 
       if (whereClauses.length > 0) {
         const whereStr = ' WHERE ' + whereClauses.join(' AND ');
@@ -632,10 +636,28 @@ app.get('/api/products', async (req, res) => {
   
       query += ' ORDER BY p.id DESC LIMIT ' + limit + ' OFFSET ' + offset;
 
-    const { rows: products } = await pool.query(query, params);
-    const { rows: countRes } = await pool.query(countQuery, params);
+      const statsQuery = `
+        SELECT 
+          COUNT(*)::int as total,
+          COUNT(*) FILTER (WHERE COALESCE(i.quantity, 0) > COALESCE(i."lowStockThreshold", 10))::int as healthy,
+          COUNT(*) FILTER (WHERE COALESCE(i.quantity, 0) <= COALESCE(i."lowStockThreshold", 10))::int as low,
+          COUNT(*) FILTER (WHERE p."expiryDate" ~ '^\\d{4}-\\d{2}-\\d{2}' AND (p."expiryDate")::date <= CURRENT_DATE + interval '30 days' AND (p."expiryDate")::date >= CURRENT_DATE)::int as "nearExpiry"
+        FROM "Product" p
+        LEFT JOIN "Inventory" i ON i."productId" = p.id
+      `;
 
-    res.json({ data: products, total: Math.max(0, parseInt(countRes[0].total)) });
+      const [productsRes, countRes, statsRes] = await Promise.all([
+        pool.query(query, params),
+        pool.query(countQuery, params),
+        pool.query(statsQuery)
+      ]);
+
+      const totalCount = Math.max(0, parseInt(countRes.rows[0]?.total || 0));
+      res.json({ 
+        data: productsRes.rows, 
+        total: totalCount,
+        summary: statsRes.rows[0] || { total: totalCount, healthy: 0, low: 0, nearExpiry: 0 }
+      });
   } catch (error) { 
     if (error.code === '23505') {
       res.status(400).json({ error: 'Username already exists' });
@@ -683,17 +705,45 @@ app.post('/api/products/bulk', async (req, res) => {
 app.post('/api/products', async (req, res) => {
   try {
     const p = req.body;
-    await pool.query('BEGIN');
-    const { rows } = await pool.query(
-      'INSERT INTO "Product" (name, category, barcode, price, "costPrice", unit, attributes) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *',
-      [p.name, p.category, p.barcode, p.price || 0, p.costPrice || 0, p.unit || 'pcs', p.attributes ? JSON.stringify(p.attributes) : '{}']
-    );
-    await pool.query('INSERT INTO "Inventory" ("productId", quantity, "lowStockThreshold") VALUES ($1, 0, 10)', [rows[0].id]);
-    await pool.query('COMMIT');
+    const initialQty = parseInt(p.initialStock ?? p.stockQuantity ?? p.quantity) || 0;
+    const lowStockThreshold = parseInt(p.lowStockThreshold) || 10;
+
+    const cteQuery = `
+      WITH new_product AS (
+        INSERT INTO "Product" (name, category, barcode, price, "costPrice", unit, attributes, "expiryDate") 
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8) 
+        RETURNING *
+      ),
+      new_inventory AS (
+        INSERT INTO "Inventory" ("productId", quantity, "lowStockThreshold", "expiryDate") 
+        SELECT id, $9, $10, "expiryDate" FROM new_product
+        RETURNING quantity, "lowStockThreshold"
+      )
+      SELECT 
+        p.*, 
+        i.quantity as "stockQuantity", 
+        i.quantity as "currentStock", 
+        i."lowStockThreshold" as "lowStockThreshold" 
+      FROM new_product p, new_inventory i;
+    `;
+
+    const { rows } = await pool.query(cteQuery, [
+      p.name, 
+      p.category, 
+      p.barcode, 
+      p.price || 0, 
+      p.costPrice || 0, 
+      p.unit || 'pcs', 
+      p.attributes ? JSON.stringify(p.attributes) : '{}', 
+      p.expiryDate || null,
+      initialQty,
+      lowStockThreshold
+    ]);
+
     res.status(201).json(rows[0]);
   } catch (error) { 
     if (error.code === '23505') {
-      res.status(400).json({ error: 'Username already exists' });
+      res.status(400).json({ error: 'Product or barcode already exists' });
     } else {
       { require('fs').appendFileSync('backend_error.log', new Date().toISOString() + ' ' + error.stack + '\n'); res.status(500).json({ error: error.message }); }
     }
@@ -703,7 +753,7 @@ app.post('/api/products', async (req, res) => {
 app.get('/api/products/:id', async (req, res) => {
   try {
     const { rows } = await pool.query(`
-      SELECT p.*, COALESCE(i.quantity, 0) as "stockQuantity", COALESCE(i.quantity, 0) as "currentStock"
+      SELECT p.*, COALESCE(i.quantity, 0) as "stockQuantity", COALESCE(i.quantity, 0) as "currentStock", COALESCE(i."lowStockThreshold", 10) as "lowStockThreshold"
       FROM "Product" p
       LEFT JOIN "Inventory" i ON i."productId" = p.id
       WHERE p.id = $1
@@ -722,10 +772,17 @@ app.put('/api/products/:id', async (req, res) => {
       'UPDATE "Product" SET name = COALESCE($1, name), category = COALESCE($2, category), barcode = COALESCE($3, barcode), price = COALESCE($4, price), "costPrice" = COALESCE($5, "costPrice"), unit = COALESCE($6, unit), attributes = COALESCE($7, attributes), "expiryDate" = COALESCE($9, "expiryDate") WHERE id = $8 RETURNING *',
       [p.name, p.category, p.barcode, p.price, p.costPrice, p.unit, p.attributes ? JSON.stringify(p.attributes) : undefined, req.params.id, p.expiryDate]
     );
-    res.json(rows[0]);
+    if (rows.length === 0) return res.status(404).json({ error: 'Product not found' });
+
+    const invRes = await pool.query('SELECT quantity, "lowStockThreshold" FROM "Inventory" WHERE "productId" = $1 LIMIT 1', [req.params.id]);
+    const updated = rows[0];
+    updated.stockQuantity = invRes.rows[0]?.quantity ?? 0;
+    updated.currentStock = updated.stockQuantity;
+    updated.lowStockThreshold = invRes.rows[0]?.lowStockThreshold ?? 10;
+    res.json(updated);
   } catch (error) { 
     if (error.code === '23505') {
-      res.status(400).json({ error: 'Username already exists' });
+      res.status(400).json({ error: 'Product or barcode already exists' });
     } else {
       { require('fs').appendFileSync('backend_error.log', new Date().toISOString() + ' ' + error.stack + '\n'); res.status(500).json({ error: error.message }); }
     }
