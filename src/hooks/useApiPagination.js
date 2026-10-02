@@ -26,7 +26,8 @@ export function useApiPagination({ endpoint, pageSize = 20, dependencies = [], s
 
   const fetchData = useCallback(async (force = false) => {
     try {
-      const url = new URL(endpoint, 'http://localhost:3001');
+      const baseUrl = (import.meta.env.VITE_API_URL || 'http://localhost:3001').replace(/\/$/, '');
+      const url = new URL(endpoint, baseUrl);
       url.searchParams.set('page', pageIndex);
       url.searchParams.set('limit', pageSize);
       if (search) url.searchParams.set('search', search);

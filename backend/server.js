@@ -1,16 +1,21 @@
+require('dotenv').config();
 const { Pool } = require('pg');
 const express = require('express');
 const cors = require('cors');
 
 const app = express();
-const PORT = 3001;
+const PORT = process.env.PORT || 3001;
 
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
+const connectionString = process.env.DATABASE_URL || 'postgresql://postgres:danger1718@localhost:5432/shop_erp?schema=public';
+const isRemoteDb = connectionString.includes('supabase') || connectionString.includes('neon') || connectionString.includes('railway') || Boolean(process.env.DATABASE_URL);
+
 const pool = new Pool({
-  connectionString: 'postgresql://postgres:danger1718@localhost:5432/shop_erp?schema=public'
+  connectionString,
+  ssl: isRemoteDb ? { rejectUnauthorized: false } : false
 });
 
 // Since we couldn't push schema with Prisma, we need to create the tables manually if they don't exist!

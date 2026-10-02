@@ -28,6 +28,8 @@ release/
 out/
 .vercel
 .env*
+!.env.example
+!backend/.env.example
 scratch/
 *.txt
 backend/*.txt
