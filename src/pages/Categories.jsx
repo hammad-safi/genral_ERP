@@ -7,6 +7,7 @@ import {
 import PageHeader from '../components/PageHeader';
 import GlobalButton from '../components/GlobalButton';
 import GlobalSearch from '../components/GlobalSearch';
+import { API_BASE_URL } from '@/lib/api';
 
 const CATEGORY_PALETTES = [
   { icon: Box, bg: 'bg-blue-50 text-blue-600 border border-blue-100' },
@@ -132,7 +133,7 @@ const Categories = () => {
 
   const loadCategories = async () => {
     try {
-      const res = await fetch('http://localhost:3001/api/categories');
+      const res = await fetch(`${API_BASE_URL}/categories`);
       const data = await res.json();
       setCategories(data);
     } catch (error) {
@@ -182,13 +183,13 @@ const Categories = () => {
       };
 
       if (editingCategory) {
-        await fetch(`http://localhost:3001/api/categories/${editingCategory.id}`, {
+        await fetch(`${API_BASE_URL}/categories/${editingCategory.id}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload)
         });
       } else {
-        await fetch(`http://localhost:3001/api/categories`, {
+        await fetch(`${API_BASE_URL}/categories`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload)
@@ -217,7 +218,7 @@ const Categories = () => {
   const handleDelete = async () => {
     if (!categoryToDelete) return;
     try {
-      await fetch(`http://localhost:3001/api/categories/${categoryToDelete}`, { method: 'DELETE' });
+      await fetch(`${API_BASE_URL}/categories/${categoryToDelete}`, { method: 'DELETE' });
       await loadCategories();
       setIsDeleteModalOpen(false);
       setCategoryToDelete(null);
@@ -310,7 +311,7 @@ const Categories = () => {
 
   const [categoryItemCounts, setCategoryItemCounts] = useState({});
   useEffect(() => {
-    fetch('http://localhost:3001/api/products?limit=10000')
+    fetch(`${API_BASE_URL}/products?limit=10000`)
       .then(r => r.json())
       .then(res => {
         const items = res.data || [];

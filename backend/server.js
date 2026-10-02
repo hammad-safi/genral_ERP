@@ -2662,6 +2662,9 @@ app.get('/api/suppliers/:id', async (req, res) => {
   } catch (error) { res.status(500).json({ error: error.message }); }
 });
 
+module.exports = app;
+
+if (!process.env.VERCEL) {
 const server = app.listen(PORT, () => {
   console.log('Backend API Server running on http://localhost:' + PORT + ' (PG RAW MODE)');
 });
@@ -2677,3 +2680,4 @@ server.on('error', (e) => {
 setInterval(() => {}, 1000);
 
 setInterval(() => {}, 100000);
+}

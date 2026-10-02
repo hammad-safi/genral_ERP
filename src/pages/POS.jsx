@@ -1,4 +1,4 @@
-import { api } from '../lib/api';
+import { api, API_BASE_URL } from '../lib/api';
 import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { Search, Trash2, Printer, CheckCircle, ShoppingCart, X, Plus, ChevronLeft, ChevronRight, CreditCard } from 'lucide-react';
 import { useReactToPrint } from 'react-to-print';
@@ -180,7 +180,7 @@ export default function POS() {
   const [categoriesList, setCategoriesList] = useState([]);
   useEffect(() => {
     api.getProducts().then(() => {}); // just for import check
-    fetch('http://localhost:3001/api/categories').then(res=>res.json()).then(data=>setCategoriesList(data)).catch(console.error);
+    fetch(`${API_BASE_URL}/categories`).then(res=>res.json()).then(data=>setCategoriesList(data)).catch(console.error);
     api.getInventory().then(res => setInventory(res.data || res)).catch(console.error);
 
     const handlePosSearch = (e) => {

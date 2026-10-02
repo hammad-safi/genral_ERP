@@ -1,4 +1,17 @@
-export const API_BASE_URL = (import.meta.env.VITE_API_URL || 'http://localhost:3001').replace(/\/$/, '') + '/api';
+const getBaseUrl = () => {
+  if (import.meta.env.VITE_API_URL) {
+    return import.meta.env.VITE_API_URL.replace(/\/$/, '') + '/api';
+  }
+  if (typeof window !== 'undefined') {
+    if (window.location.protocol === 'file:' || window.electronAPI) {
+      return 'http://localhost:3001/api';
+    }
+    return `${window.location.origin}/api`;
+  }
+  return 'http://localhost:3001/api';
+};
+
+export const API_BASE_URL = getBaseUrl();
 
 export const api = {
   // --- PRODUCTS ---

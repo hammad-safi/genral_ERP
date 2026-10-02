@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
+import { API_BASE_URL } from '@/lib/api';
 
-const API_URL = 'http://localhost:3001/api/dashboard-stats';
+const API_URL = `${API_BASE_URL}/dashboard-stats`;
 
 let globalCache = null;
 let fetchPromise = null;
