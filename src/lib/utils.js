@@ -30,7 +30,8 @@ export const downloadJson = (data, fileName = 'shop-erp-backup.json') => {
 
 export const calculateCOGS = (sales, products) => {
   return sales.reduce((total, sale) => {
-    return sale.items.reduce((saleSum, item) => {
+    const items = sale.items || [];
+    return items.reduce((saleSum, item) => {
       // Use snapshotted costPrice from sale item if available,
       // fall back to current product costPrice for old records
       const costPrice = item.costPrice

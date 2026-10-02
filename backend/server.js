@@ -191,6 +191,7 @@ async function initDB() {
     try { await pool.query('ALTER TABLE "User" ADD COLUMN "email" TEXT'); } catch(e) {}
     try { await pool.query('ALTER TABLE "User" ADD COLUMN "address" TEXT'); } catch(e) {}
     try { await pool.query('ALTER TABLE "User" ADD COLUMN "profilePicture" TEXT'); } catch(e) {}
+    try { await pool.query('ALTER TABLE "Expense" ADD COLUMN "note" TEXT'); } catch(e) {}
   } finally {
     client.release();
   }
@@ -202,10 +203,14 @@ initDB().catch(console.error);
 const calculateNetProfit = (sales, products, expenses) => {
   const validSales = sales.filter((sale) => sale.returned !== true);
   const totalRevenue = validSales.reduce((sum, sale) => sum + sale.totalAmount, 0);
+  const productsMap = products instanceof Map ? products : new Map((products || []).map(p => [p.id, p]));
   const totalCOGS = validSales.reduce((total, sale) => {
     const items = typeof sale.items === 'string' ? JSON.parse(sale.items) : (sale.items || []);
     return total + items.reduce((saleSum, item) => {
-      const costPrice = item.costPrice ?? products.find((p) => p.id === item.productId)?.costPrice ?? 0;
+      let costPrice = item.costPrice;
+      if (costPrice == null) {
+        costPrice = productsMap.get(item.productId)?.costPrice ?? 0;
+      }
       return saleSum + costPrice * (item.qty || item.quantity || 0);
     }, 0);
   }, 0);
@@ -407,35 +412,17 @@ app.get('/api/metrics/dashboard', async (req, res) => {
 
 app.get('/api/metrics/reports', async (req, res) => {
   try {
-    const { from, to } = req.query;
+    const from = (req.query.from || '').trim() || '1970-01-01';
+    const to = (req.query.to || '').trim() || '2099-12-31';
     
-    const [{rows: salesData}, {rows: purchaseData}, {rows: expenseData}, {rows: inventoryData}, {rows: productsData}] = await Promise.all([
-      pool.query('SELECT * FROM "Sale"'),
-      pool.query('SELECT * FROM "Purchase"'),
-      pool.query('SELECT * FROM "Expense"'),
-      pool.query('SELECT * FROM "Inventory"'),
-      pool.query('SELECT * FROM "Product"')
+    const [{rows: rawSales}, {rows: filteredPurchases}, {rows: filteredExpenses}, {rows: inventoryData}, {rows: productsData}] = await Promise.all([
+        pool.query(`SELECT * FROM "Sale" WHERE "date"::date >= $1::date AND "date"::date <= $2::date`, [from, to]),
+        pool.query(`SELECT * FROM "Purchase" WHERE SUBSTRING("date" FROM 1 FOR 10) >= $1 AND SUBSTRING("date" FROM 1 FOR 10) <= $2`, [from, to]),
+        pool.query(`SELECT * FROM "Expense" WHERE SUBSTRING("date" FROM 1 FOR 10) >= $1 AND SUBSTRING("date" FROM 1 FOR 10) <= $2`, [from, to]),
+        pool.query('SELECT * FROM "Inventory"'),
+        pool.query('SELECT * FROM "Product"')
     ]);
-
-    const activeSales = salesData.filter(s => s.returned !== true);
-
-    const filteredSales = activeSales.filter((sale) => {
-      const d = new Date(sale.date);
-      const localDateStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-      return localDateStr >= from && localDateStr <= to;
-    });
-
-    const filteredPurchases = purchaseData.filter((purchase) => {
-      const d = new Date(purchase.date);
-      const localDateStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-      return localDateStr >= from && localDateStr <= to;
-    });
-
-    const filteredExpenses = expenseData.filter((expense) => {
-      const d = new Date(expense.date);
-      const localDateStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-      return localDateStr >= from && localDateStr <= to;
-    });
+    const filteredSales = rawSales.filter(s => s.returned !== true);
 
     const totalSalesAmount = filteredSales.reduce((acc, curr) => acc + curr.totalAmount, 0);
     const totalPurchasesAmount = filteredPurchases.reduce((acc, curr) => acc + (curr.totalAmount ?? 0), 0);
@@ -496,15 +483,15 @@ app.get('/api/metrics/reports', async (req, res) => {
 
 app.get('/api/metrics/monthly', async (req, res) => {
   try {
-    const [{rows: salesData}, {rows: purchaseData}, {rows: expenseData}, {rows: productsData}, {rows: customersData}] = await Promise.all([
+    const [{rows: salesData}, {rows: purchaseData}, {rows: expenseData}, {rows: productsData}] = await Promise.all([
       pool.query('SELECT * FROM "Sale"'),
       pool.query('SELECT * FROM "Purchase"'),
       pool.query('SELECT * FROM "Expense"'),
-      pool.query('SELECT * FROM "Product"'),
-      pool.query('SELECT * FROM "Customer"')
+      pool.query('SELECT * FROM "Product"')
     ]);
 
     const activeSales = salesData.filter(s => s.returned !== true);
+    const productsMap = new Map(productsData.map(p => [p.id, p]));
 
     const groupByMonth = (items) => {
       const groups = {};
@@ -527,6 +514,11 @@ app.get('/api/metrics/monthly', async (req, res) => {
       ...Object.keys(expensesByMonth)
     ])].sort().reverse();
 
+    let grandTotalSales = 0;
+    let grandTotalPurchases = 0;
+    let grandTotalExpenses = 0;
+    let grandNetProfit = 0;
+
     const monthSummaries = allMonths.map(month => {
       const monthlySales = salesByMonth[month] ?? [];
       const monthlyPurchases = purchasesByMonth[month] ?? [];
@@ -535,38 +527,27 @@ app.get('/api/metrics/monthly', async (req, res) => {
       const totalSales = monthlySales.reduce((s, x) => s + (x.totalAmount ?? 0), 0);
       const totalPurchases = monthlyPurchases.reduce((s, x) => s + (x.totalAmount ?? 0), 0);
       const totalExpenses = monthlyExpenses.reduce((s, x) => s + (x.amount ?? 0), 0);
-      const netProfit = calculateNetProfit(monthlySales, productsData, monthlyExpenses);
+      const netProfit = calculateNetProfit(monthlySales, productsMap, monthlyExpenses);
+
+      grandTotalSales += totalSales;
+      grandTotalPurchases += totalPurchases;
+      grandTotalExpenses += totalExpenses;
+      grandNetProfit += netProfit;
 
       const [year, mon] = month.split('-');
       const monthName = new Date(Number(year), Number(mon) - 1).toLocaleString('default', {
         month: 'long', year: 'numeric'
       });
 
-      const monthlySalesMapped = monthlySales.map(sale => {
-        let customerName = 'Walk-in';
-        if (sale.customerId) {
-          customerName = customersData.find(c => c.id === sale.customerId)?.name ?? 'Walk-in';
-        }
-        return { ...sale, customerName };
-      });
-
       return {
         key: month,
         monthName,
-        sales: monthlySalesMapped,
-        purchases: monthlyPurchases,
-        expenses: monthlyExpenses,
         totalSales,
         totalPurchases,
         totalExpenses,
         netProfit
       };
     });
-
-    const grandTotalSales = monthSummaries.reduce((s, m) => s + m.totalSales, 0);
-    const grandTotalPurchases = monthSummaries.reduce((s, m) => s + m.totalPurchases, 0);
-    const grandTotalExpenses = monthSummaries.reduce((s, m) => s + m.totalExpenses, 0);
-    const grandNetProfit = monthSummaries.reduce((s, m) => s + m.netProfit, 0);
 
     res.json({
       monthSummaries,
@@ -586,26 +567,65 @@ app.get('/api/metrics/monthly', async (req, res) => {
 
 // --- PRODUCTS ---
 app.get('/api/products', async (req, res) => {
-  try {
-    const page = parseInt(req.query.page) || 0;
-    const limit = parseInt(req.query.limit) || 20;
-    const search = req.query.search || '';
-    const offset = page * limit;
+    try {
+      const page = parseInt(req.query.page) || 0;
+      const limit = parseInt(req.query.limit) || 20;
+      const search = req.query.search || '';
+      const category = req.query.category || '';
+      const stock = req.query.stock || '';
+      const expiry = req.query.expiry || '';
+      const offset = page * limit;
+  
+      let query = 'SELECT p.* FROM "Product" p';
+      let countQuery = 'SELECT COUNT(p.*) as total FROM "Product" p';
+      let joins = '';
+      let params = [];
+      let whereClauses = [];
+  
+      if (stock === 'low') {
+        joins += ' LEFT JOIN "Inventory" i ON i."productId" = p.id';
+        whereClauses.push('COALESCE(i.quantity, 0) <= COALESCE(p."lowStockThreshold", 10)');
+        whereClauses.push('COALESCE(i.quantity, 0) > 0');
+      } else if (stock === 'out') {
+        joins += ' LEFT JOIN "Inventory" i ON i."productId" = p.id';
+        whereClauses.push('COALESCE(i.quantity, 0) <= 0');
+      }
 
-    let query = 'SELECT * FROM "Product"';
-    let countQuery = 'SELECT COUNT(*) as total FROM "Product"';
-    let params = [];
+      if (expiry === 'near') {
+        whereClauses.push('p."expiryDate" IS NOT NULL AND p."expiryDate" != \'\' AND p."expiryDate"::date <= CURRENT_DATE + interval \'30 days\' AND p."expiryDate"::date >= CURRENT_DATE');
+      } else if (expiry === 'expired') {
+        whereClauses.push('p."expiryDate" IS NOT NULL AND p."expiryDate" != \'\' AND p."expiryDate"::date < CURRENT_DATE');
+      }
 
-    if (search) {
-      query += ' WHERE "name" ILIKE $1 OR "barcode" ILIKE $1 OR "category" ILIKE $1';
-      countQuery += ' WHERE "name" ILIKE $1 OR "barcode" ILIKE $1 OR "category" ILIKE $1';
-      params.push('%' + search + '%');
-    } else {
-      // Use ultra-fast table statistics for total count when not searching
+      if (search) {
+        params.push('%' + search + '%');
+        whereClauses.push('(p."name" ILIKE $' + params.length + ' OR p."barcode" ILIKE $' + params.length + ' OR p."category" ILIKE $' + params.length + ')');
+      }
       
-    }
+      if (category && category !== 'All') {
+        const cats = category.split(',').filter(Boolean);
+        if (cats.length > 0) {
+          const catParams = [];
+          for (const c of cats) {
+            params.push(c);
+            catParams.push('$' + params.length);
+          }
+          whereClauses.push('p."category" IN (' + catParams.join(', ') + ')');
+        }
+      }
+  
+      if (joins) {
+        query += joins;
+        countQuery += joins;
+      }
 
-    query += ' ORDER BY id DESC LIMIT ' + limit + ' OFFSET ' + offset;
+      if (whereClauses.length > 0) {
+        const whereStr = ' WHERE ' + whereClauses.join(' AND ');
+        query += whereStr;
+        countQuery += whereStr;
+      }
+  
+      query += ' ORDER BY p.id DESC LIMIT ' + limit + ' OFFSET ' + offset;
 
     const { rows: products } = await pool.query(query, params);
     const { rows: countRes } = await pool.query(countQuery, params);
@@ -672,6 +692,21 @@ app.post('/api/products', async (req, res) => {
     } else {
       { require('fs').appendFileSync('backend_error.log', new Date().toISOString() + ' ' + error.stack + '\n'); res.status(500).json({ error: error.message }); }
     }
+  }
+});
+
+app.get('/api/products/:id', async (req, res) => {
+  try {
+    const { rows } = await pool.query(`
+      SELECT p.*, COALESCE(i.quantity, 0) as "stockQuantity", COALESCE(i.quantity, 0) as "currentStock"
+      FROM "Product" p
+      LEFT JOIN "Inventory" i ON i."productId" = p.id
+      WHERE p.id = $1
+    `, [req.params.id]);
+    if (rows.length === 0) return res.status(404).json({ error: 'Product not found' });
+    res.json(rows[0]);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
   }
 });
 
@@ -983,21 +1018,27 @@ app.post('/api/customers', async (req, res) => {
   const client = await pool.connect();
   try {
     const c = req.body;
+    const numBal = parseFloat(c.openingBalance) || 0;
     await client.query('BEGIN');
     const { rows } = await client.query(
-      'INSERT INTO "Customer" (name, phone, email, address) VALUES ($1, $2, $3, $4) RETURNING *',
-      [c.name, c.phone || '', c.email || '', c.address || '']
+      'INSERT INTO "Customer" (name, phone, email, address, balance) VALUES ($1, $2, $3, $4, $5) RETURNING *',
+      [c.name, c.phone || '', c.email || '', c.address || '', numBal]
     );
     const newCustomer = rows[0];
 
-    if (c.openingBalance && c.openingBalance > 0) {
+    if (numBal !== 0) {
+      const debit = numBal > 0 ? numBal : 0;
+      const credit = numBal < 0 ? Math.abs(numBal) : 0;
       await client.query(
         'INSERT INTO "CustomerLedger" ("customerId", "date", "description", "debit", "credit", "balance") VALUES ($1, $2, $3, $4, $5, $6)',
-        [newCustomer.id, new Date().toISOString(), 'Opening balance', c.openingBalance, 0, c.openingBalance]
+        [newCustomer.id, new Date().toISOString(), 'Opening balance', debit, credit, numBal]
       );
     }
     
     await client.query('COMMIT');
+    newCustomer.balance = numBal;
+    newCustomer.totalPaid = 0;
+    newCustomer.totalCharged = numBal > 0 ? numBal : 0;
     res.status(201).json(newCustomer);
   } catch (error) {
     await client.query('ROLLBACK');
@@ -1068,27 +1109,52 @@ app.get('/api/customers', async (req, res) => {
 
     let query = `
       SELECT c.*, 
-        COALESCE((SELECT SUM(debit) - SUM(credit) FROM "CustomerLedger" WHERE "customerId" = c.id), 0) as balance,
+        COALESCE(
+          (SELECT SUM(debit) - SUM(credit) FROM "CustomerLedger" WHERE "customerId" = c.id),
+          c.balance,
+          0
+        ) as balance,
         COALESCE((SELECT SUM(credit) FROM "CustomerLedger" WHERE "customerId" = c.id), 0) as "totalPaid"
       FROM "Customer" c
     `;
-    let countQuery = 'SELECT COUNT(*) as total FROM "Customer"';
+    let countQuery = 'SELECT COUNT(*) as total FROM "Customer" c';
     let params = [];
 
     if (search) {
-      query += ' WHERE c.name ILIKE $1 OR c.phone ILIKE $1';
-      countQuery += ' WHERE name ILIKE $1 OR phone ILIKE $1';
+      query += ' WHERE c.name ILIKE $1 OR c.phone ILIKE $1 OR c.email ILIKE $1 OR REPLACE(REPLACE(COALESCE(c.phone, \'\'), \'-\', \'\'), \' \', \'\') ILIKE $1';
+      countQuery += ' WHERE c.name ILIKE $1 OR c.phone ILIKE $1 OR c.email ILIKE $1 OR REPLACE(REPLACE(COALESCE(c.phone, \'\'), \'-\', \'\'), \' \', \'\') ILIKE $1';
       params.push('%' + search + '%');
-    } else {
-      
     }
     
     query += ' ORDER BY c.id DESC LIMIT ' + limit + ' OFFSET ' + offset;
 
     const { rows: data } = await pool.query(query, params);
     const { rows: countRes } = await pool.query(countQuery, params);
+
+    const { rows: statsRes } = await pool.query(`
+      SELECT 
+        COUNT(*)::int as "totalCount",
+        COALESCE(SUM(
+          GREATEST(
+            COALESCE(
+              (SELECT SUM(debit) - SUM(credit) FROM "CustomerLedger" WHERE "customerId" = c.id),
+              c.balance,
+              0
+            ),
+            0
+          )
+        ), 0)::float as "totalOwed",
+        COALESCE((SELECT SUM(credit) FROM "CustomerLedger"), 0)::float as "totalPaid"
+      FROM "Customer" c
+    `);
     
-    res.json({ data, total: Math.max(0, parseInt(countRes[0].total)), page, totalPages: Math.ceil(Math.max(0, parseInt(countRes[0].total)) / limit) });
+    res.json({ 
+      data, 
+      total: Math.max(0, parseInt(countRes[0].total)), 
+      page, 
+      totalPages: Math.ceil(Math.max(0, parseInt(countRes[0].total)) / limit),
+      summary: statsRes[0] || { totalCount: 0, totalOwed: 0, totalPaid: 0 }
+    });
   } catch (error) { 
     if (error.code === '23505') {
       res.status(400).json({ error: 'Username already exists' });
@@ -1100,31 +1166,8 @@ app.get('/api/customers', async (req, res) => {
 
 
 
-app.post('/api/customers', async (req, res) => {
-  try {
-    const { name, phone, email, address, openingBalance } = req.body;
-    const { rows } = await pool.query(
-      'INSERT INTO "Customer" (name, phone, email, address) VALUES ($1, $2, $3, $4) RETURNING *',
-      [name, phone, email, address]
-    );
-    const newCustomer = rows[0];
-    
-    // Ledger logic for opening balance
-    if (openingBalance && openingBalance !== 0) {
-      await pool.query(
-        'INSERT INTO "CustomerLedger" ("customerId", "date", "description", "amount", "type", "balance") VALUES ($1, $2, $3, $4, $5, $6)',
-        [newCustomer.id, new Date().toISOString(), 'Opening Balance', Math.abs(openingBalance), openingBalance > 0 ? 'charge' : 'payment', openingBalance]
-      );
-    }
-    res.status(201).json(newCustomer);
-  } catch (error) { 
-    if (error.code === '23505') {
-      res.status(400).json({ error: 'Username already exists' });
-    } else {
-      { require('fs').appendFileSync('backend_error.log', new Date().toISOString() + ' ' + error.stack + '\n'); res.status(500).json({ error: error.message }); }
-    }
-  }
-});
+
+
 
 app.put('/api/customers/:id', async (req, res) => {
   try {
@@ -1590,8 +1633,30 @@ app.get('/api/suppliers', async (req, res) => {
 
     const { rows: data } = await pool.query(query, params);
     const { rows: countRes } = await pool.query(countQuery, params);
+    const { rows: statsRes } = await pool.query(`
+      SELECT 
+        COUNT(*)::int as "totalCount",
+        COALESCE(SUM(
+          GREATEST(
+            COALESCE(
+              (SELECT SUM(credit) - SUM(debit) FROM "SupplierLedger" WHERE "supplierId" = s.id),
+              s.balance,
+              0
+            ),
+            0
+          )
+        ), 0)::float as "totalOwed",
+        COALESCE((SELECT SUM(debit) FROM "SupplierLedger"), 0)::float as "totalPaid"
+      FROM "Supplier" s
+    `);
 
-    res.json({ data, total: Math.max(0, parseInt(countRes[0].total)), page, totalPages: Math.ceil(Math.max(0, parseInt(countRes[0].total)) / limit) });
+    res.json({ 
+      data, 
+      total: Math.max(0, parseInt(countRes[0].total)), 
+      page, 
+      totalPages: Math.ceil(Math.max(0, parseInt(countRes[0].total)) / limit),
+      summary: statsRes[0] || { totalCount: 0, totalOwed: 0, totalPaid: 0 }
+    });
   } catch (error) { 
     if (error.code === '23505') {
       res.status(400).json({ error: 'Username already exists' });
@@ -1603,22 +1668,33 @@ app.get('/api/suppliers', async (req, res) => {
 
 app.get('/api/purchases', async (req, res) => {
   try {
-    const limit = parseInt(req.query.limit) || 10;
-    const page = parseInt(req.query.page) || 1;
+    const page = parseInt(req.query.page) || 0;
+    const limit = parseInt(req.query.limit) || 20;
     const search = req.query.search || '';
-    const offset = (page - 1) * limit;
+    const month = req.query.month || '';
+    const offset = page * limit;
 
     let query = 'SELECT * FROM "Purchase"';
     let countQuery = 'SELECT COUNT(*) as total FROM "Purchase"';
-    const params = [];
-    
+    let params = [];
+    let whereClauses = [];
+
     if (search) {
       params.push('%' + search + '%');
-      const searchClause = ' WHERE ("supplierName" ILIKE $1 OR date ILIKE $1 OR id::text ILIKE $1)';
-      query += searchClause;
-      countQuery += searchClause;
+      whereClauses.push('("supplierName" ILIKE $' + params.length + ' OR date ILIKE $' + params.length + ' OR id::text ILIKE $' + params.length + ')');
     }
     
+    if (month) {
+      params.push(month);
+      whereClauses.push("to_char(\"date\", 'YYYY-MM') = $" + params.length);
+    }
+    
+    if (whereClauses.length > 0) {
+      const whereStr = ' WHERE ' + whereClauses.join(' AND ');
+      query += whereStr;
+      countQuery += whereStr;
+    }
+
     query += ' ORDER BY id DESC LIMIT ' + limit + ' OFFSET ' + offset;
 
     const { rows: purchases } = await pool.query(query, params);
@@ -1787,29 +1863,50 @@ app.post('/api/seed', async (req, res) => {
 
 // --- SUPPLIERS ---
 app.post('/api/suppliers', async (req, res) => {
+  const client = await pool.connect();
   try {
     const { name, phone, email, address, openingBalance } = req.body;
-    await pool.query('BEGIN');
-    const { rows } = await pool.query(
-      'INSERT INTO "Supplier" (name, phone, email, address) VALUES ($1, $2, $3, $4) RETURNING *',
-      [name ?? null, phone ?? null, email ?? null, address ?? null]
+    const numBal = parseFloat(openingBalance) || 0;
+    await client.query('BEGIN');
+    const { rows } = await client.query(
+      'INSERT INTO "Supplier" (name, phone, email, address, balance) VALUES ($1, $2, $3, $4, $5) RETURNING *',
+      [name ?? null, phone ?? null, email ?? null, address ?? null, numBal]
     );
-    const supplierId = rows[0].id;
-    if (openingBalance && parseFloat(openingBalance) > 0) {
-       await pool.query(
+    const supplier = rows[0];
+    if (numBal > 0) {
+       await client.query(
          'INSERT INTO "SupplierLedger" ("supplierId", "date", description, credit, debit, balance) VALUES ($1, $2, $3, $4, 0, $5)',
-         [supplierId, new Date().toISOString(), 'Opening Balance', parseFloat(openingBalance), parseFloat(openingBalance)]
+         [supplier.id, new Date().toISOString(), 'Opening Balance', numBal, numBal]
        );
     }
-    await pool.query('COMMIT');
-    res.status(201).json(rows[0]);
+    await client.query('COMMIT');
+    supplier.balance = numBal;
+    res.status(201).json(supplier);
   } catch (error) { 
-    await pool.query('ROLLBACK');
+    await client.query('ROLLBACK');
     { require('fs').appendFileSync('backend_error.log', new Date().toISOString() + ' ' + error.stack + '\n'); res.status(500).json({ error: error.message }); } 
+  } finally {
+    client.release();
   }
 });
 
-app.get('/api/suppliers/:id', async (req, res) => { try { const { rows } = await pool.query('SELECT * FROM "Supplier" WHERE id = $1', [req.params.id]); res.json(rows[0] || {}); } catch(e) { res.status(500).json({error:e.message}); } });
+app.get('/api/suppliers/:id', async (req, res) => {
+  try {
+    const { rows } = await pool.query(`
+      SELECT s.*, 
+        COALESCE(
+          (SELECT SUM(credit) - SUM(debit) FROM "SupplierLedger" WHERE "supplierId" = s.id),
+          s.balance,
+          0
+        ) as balance
+      FROM "Supplier" s WHERE s.id = $1
+    `, [req.params.id]);
+    if (rows.length === 0) return res.status(404).json({ error: 'Supplier not found' });
+    res.json(rows[0]);
+  } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
+});
 
 app.put('/api/suppliers/:id', async (req, res) => {
   try {
@@ -1909,16 +2006,16 @@ app.post('/api/sales', async (req, res) => {
       // Charge
       prevBal += chargeAmt;
       await client.query(
-        'INSERT INTO "CustomerLedger" ("customerId", "date", "description", "amount", "type", "balance", "refId") VALUES ($1, $2, $3, $4, $5, $6, $7)',
-        [customerId, date, 'Invoice #' + sale.id, chargeAmt, 'charge', prevBal, sale.id]
+        'INSERT INTO "CustomerLedger" ("customerId", "date", "description", "debit", "credit", "balance", "refId") VALUES ($1, $2, $3, $4, $5, $6, $7)',
+        [customerId, date, 'Invoice #' + sale.id, chargeAmt, 0, prevBal, sale.id]
       );
       
       // Payment (if partial payment was made)
       if (amountPaid > 0) {
         prevBal -= amountPaid;
         await client.query(
-          'INSERT INTO "CustomerLedger" ("customerId", "date", "description", "amount", "type", "balance", "refId") VALUES ($1, $2, $3, $4, $5, $6, $7)',
-          [customerId, date, 'Payment for Invoice #' + sale.id, amountPaid, 'payment', prevBal, sale.id]
+          'INSERT INTO "CustomerLedger" ("customerId", "date", "description", "debit", "credit", "balance", "refId") VALUES ($1, $2, $3, $4, $5, $6, $7)',
+          [customerId, date, 'Payment for Invoice #' + sale.id, 0, amountPaid, prevBal, sale.id]
         );
       }
     }
@@ -1968,19 +2065,29 @@ app.get('/api/expenses', async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 0;
     const limit = parseInt(req.query.limit) || 20;
-    const search = req.query.search || '';
+    const search = (req.query.search || '').trim();
+    const category = (req.query.category || '').trim();
     const offset = page * limit;
 
-    let query = 'SELECT * FROM "Expense"';
+    let query = 'SELECT *, COALESCE(description, \'\') as title FROM "Expense"';
     let countQuery = 'SELECT COUNT(*) as total FROM "Expense"';
     let params = [];
+    let whereClauses = [];
 
     if (search) {
-      query += ' WHERE "description" ILIKE $1 OR "category" ILIKE $1';
-      countQuery += ' WHERE "description" ILIKE $1 OR "category" ILIKE $1';
       params.push('%' + search + '%');
-    } else {
-      
+      whereClauses.push(`("description" ILIKE $${params.length} OR "category" ILIKE $${params.length} OR "note" ILIKE $${params.length})`);
+    }
+
+    if (category && category !== 'All') {
+      params.push(category);
+      whereClauses.push(`"category" = $${params.length}`);
+    }
+
+    if (whereClauses.length > 0) {
+      const whereStr = ' WHERE ' + whereClauses.join(' AND ');
+      query += whereStr;
+      countQuery += whereStr;
     }
 
     query += ' ORDER BY id DESC LIMIT ' + limit + ' OFFSET ' + offset;
@@ -1988,47 +2095,61 @@ app.get('/api/expenses', async (req, res) => {
     const { rows: data } = await pool.query(query, params);
     const { rows: countRes } = await pool.query(countQuery, params);
 
-    res.json({ data, total: Math.max(0, parseInt(countRes[0].total)), page, totalPages: Math.ceil(Math.max(0, parseInt(countRes[0].total)) / limit) });
+    const { rows: statsRes } = await pool.query(`
+      SELECT 
+        COUNT(*)::int as "totalCount",
+        COALESCE(SUM("amount"), 0)::float as "totalAmount"
+      FROM "Expense"
+    `);
+
+    res.json({ 
+      data, 
+      total: Math.max(0, parseInt(countRes[0].total)), 
+      page, 
+      totalPages: Math.ceil(Math.max(0, parseInt(countRes[0].total)) / limit),
+      summary: statsRes[0] || { totalCount: 0, totalAmount: 0 }
+    });
   } catch (error) { 
-    if (error.code === '23505') {
-      res.status(400).json({ error: 'Username already exists' });
-    } else {
-      { require('fs').appendFileSync('backend_error.log', new Date().toISOString() + ' ' + error.stack + '\n'); res.status(500).json({ error: error.message }); }
-    }
+    { require('fs').appendFileSync('backend_error.log', new Date().toISOString() + ' ' + error.stack + '\n'); res.status(500).json({ error: error.message }); }
   }
 });
 
 app.post('/api/expenses', async (req, res) => {
   try {
-    const { date, amount, description, category } = req.body;
+    const { date, amount, description, title, note, category } = req.body;
+    const desc = description || title || '';
     const { rows } = await pool.query(
-      'INSERT INTO "Expense" ("date", "amount", "description", "category") VALUES ($1, $2, $3, $4) RETURNING *',
-      [date || new Date().toISOString(), amount ?? 0, description ?? null, category ?? null]
+      'INSERT INTO "Expense" ("date", "amount", "description", "category", "note") VALUES ($1, $2, $3, $4, $5) RETURNING *, COALESCE(description, \'\') as title',
+      [date || new Date().toISOString(), parseFloat(amount) || 0, desc, category || 'Other', note || null]
     );
     res.status(201).json(rows[0]);
   } catch (error) { 
-    if (error.code === '23505') {
-      res.status(400).json({ error: 'Username already exists' });
-    } else {
-      { require('fs').appendFileSync('backend_error.log', new Date().toISOString() + ' ' + error.stack + '\n'); res.status(500).json({ error: error.message }); }
-    }
+    { require('fs').appendFileSync('backend_error.log', new Date().toISOString() + ' ' + error.stack + '\n'); res.status(500).json({ error: error.message }); }
   }
 });
 
 app.put('/api/expenses/:id', async (req, res) => {
   try {
-    const { date, amount, description, category } = req.body;
+    const { date, amount, description, title, note, category } = req.body;
+    const desc = (description !== undefined ? description : title) ?? null;
     const { rows } = await pool.query(
-      'UPDATE "Expense" SET "date" = COALESCE($1, "date"), "amount" = COALESCE($2, "amount"), "description" = COALESCE($3, "description"), "category" = COALESCE($4, "category") WHERE id = $5 RETURNING *',
-      [date ?? null, amount ?? null, description ?? null, category ?? null, req.params.id]
+      'UPDATE "Expense" SET "date" = COALESCE($1, "date"), "amount" = COALESCE($2, "amount"), "description" = COALESCE($3, "description"), "category" = COALESCE($4, "category"), "note" = COALESCE($5, "note") WHERE id = $6 RETURNING *, COALESCE(description, \'\') as title',
+      [date ?? null, amount !== undefined ? parseFloat(amount) : null, desc, category ?? null, note ?? null, req.params.id]
     );
     res.json(rows[0]);
   } catch (error) { 
-    if (error.code === '23505') {
-      res.status(400).json({ error: 'Username already exists' });
-    } else {
-      { require('fs').appendFileSync('backend_error.log', new Date().toISOString() + ' ' + error.stack + '\n'); res.status(500).json({ error: error.message }); }
-    }
+    { require('fs').appendFileSync('backend_error.log', new Date().toISOString() + ' ' + error.stack + '\n'); res.status(500).json({ error: error.message }); }
+  }
+});
+
+app.delete('/api/expenses/bulk', async (req, res) => {
+  try {
+    const ids = req.body.ids || [];
+    if (!ids.length) return res.json({ message: 'No ids provided' });
+    await pool.query('DELETE FROM "Expense" WHERE id = ANY($1::int[])', [ids]);
+    res.json({ success: true, message: 'Expenses deleted successfully' });
+  } catch (error) { 
+    { require('fs').appendFileSync('backend_error.log', new Date().toISOString() + ' ' + error.stack + '\n'); res.status(500).json({ error: error.message }); }
   }
 });
 
@@ -2037,11 +2158,7 @@ app.delete('/api/expenses/:id', async (req, res) => {
     await pool.query('DELETE FROM "Expense" WHERE id = $1', [req.params.id]);
     res.json({ success: true });
   } catch (error) { 
-    if (error.code === '23505') {
-      res.status(400).json({ error: 'Username already exists' });
-    } else {
-      { require('fs').appendFileSync('backend_error.log', new Date().toISOString() + ' ' + error.stack + '\n'); res.status(500).json({ error: error.message }); }
-    }
+    { require('fs').appendFileSync('backend_error.log', new Date().toISOString() + ' ' + error.stack + '\n'); res.status(500).json({ error: error.message }); }
   }
 });
 
@@ -2085,7 +2202,36 @@ app.get('/api/customerLedger', async (req, res) => {
 
 app.get('/api/customers/:id/ledger', async (req, res) => {
   try {
-    const { rows } = await pool.query('SELECT * FROM "CustomerLedger" WHERE "customerId" = $1 ORDER BY id ASC', [req.params.id]);
+    const page = req.query.page !== undefined ? parseInt(req.query.page) : null;
+    const limit = req.query.limit !== undefined ? parseInt(req.query.limit) : null;
+    const search = req.query.search || '';
+
+    let query = 'SELECT * FROM "CustomerLedger" WHERE "customerId" = $1';
+    let countQuery = 'SELECT COUNT(*) as total FROM "CustomerLedger" WHERE "customerId" = $1';
+    let params = [req.params.id];
+
+    if (search) {
+      query += ' AND (description ILIKE $2 OR date ILIKE $2)';
+      countQuery += ' AND (description ILIKE $2 OR date ILIKE $2)';
+      params.push('%' + search + '%');
+    }
+
+    query += ' ORDER BY id ASC';
+
+    if (page !== null && limit !== null) {
+      const offset = page * limit;
+      query += ` LIMIT ${limit} OFFSET ${offset}`;
+      const { rows } = await pool.query(query, params);
+      const { rows: countRes } = await pool.query(countQuery, params);
+      return res.json({
+        data: rows,
+        total: Math.max(0, parseInt(countRes[0].total)),
+        page,
+        totalPages: Math.ceil(Math.max(0, parseInt(countRes[0].total)) / limit)
+      });
+    }
+
+    const { rows } = await pool.query(query, params);
     res.json(rows);
   } catch (error) { 
     if (error.code === '23505') {
@@ -2126,7 +2272,36 @@ app.post('/api/customers/:id/ledger', async (req, res) => {
 
 app.get('/api/suppliers/:id/ledger', async (req, res) => {
   try {
-    const { rows } = await pool.query('SELECT * FROM "SupplierLedger" WHERE "supplierId" = $1 ORDER BY id ASC', [req.params.id]);
+    const page = req.query.page !== undefined ? parseInt(req.query.page) : null;
+    const limit = req.query.limit !== undefined ? parseInt(req.query.limit) : null;
+    const search = req.query.search || '';
+
+    let query = 'SELECT * FROM "SupplierLedger" WHERE "supplierId" = $1';
+    let countQuery = 'SELECT COUNT(*) as total FROM "SupplierLedger" WHERE "supplierId" = $1';
+    let params = [req.params.id];
+
+    if (search) {
+      query += ' AND (description ILIKE $2 OR date ILIKE $2)';
+      countQuery += ' AND (description ILIKE $2 OR date ILIKE $2)';
+      params.push('%' + search + '%');
+    }
+
+    query += ' ORDER BY id ASC';
+
+    if (page !== null && limit !== null) {
+      const offset = page * limit;
+      query += ` LIMIT ${limit} OFFSET ${offset}`;
+      const { rows } = await pool.query(query, params);
+      const { rows: countRes } = await pool.query(countQuery, params);
+      return res.json({
+        data: rows,
+        total: Math.max(0, parseInt(countRes[0].total)),
+        page,
+        totalPages: Math.ceil(Math.max(0, parseInt(countRes[0].total)) / limit)
+      });
+    }
+
+    const { rows } = await pool.query(query, params);
     res.json(rows);
   } catch (error) { 
     if (error.code === '23505') {
@@ -2399,6 +2574,54 @@ app.delete('/api/roles/:id', async (req, res) => {
     } else {
       { require('fs').appendFileSync('backend_error.log', new Date().toISOString() + ' ' + error.stack + '\n'); res.status(500).json({ error: error.message }); }
     }
+  }
+});
+
+// --- AUDIT LOGS ---
+app.get('/api/audit', async (req, res) => {
+  try {
+    const page = parseInt(req.query.page) || 0;
+    const limit = parseInt(req.query.limit) || 50;
+    const search = (req.query.search || '').trim();
+    const offset = page * limit;
+
+    let query = 'SELECT * FROM "AuditLog"';
+    let countQuery = 'SELECT COUNT(*) as total FROM "AuditLog"';
+    let params = [];
+
+    if (search) {
+      params.push('%' + search + '%');
+      const clause = ' WHERE ("userName" ILIKE $1 OR "action" ILIKE $1 OR "module" ILIKE $1 OR "details" ILIKE $1)';
+      query += clause;
+      countQuery += clause;
+    }
+
+    query += ' ORDER BY id DESC LIMIT ' + limit + ' OFFSET ' + offset;
+
+    const { rows: data } = await pool.query(query, params);
+    const { rows: countRes } = await pool.query(countQuery, params);
+
+    res.json({
+      data,
+      total: Math.max(0, parseInt(countRes[0]?.total || 0)),
+      page,
+      totalPages: Math.ceil(Math.max(0, parseInt(countRes[0]?.total || 0)) / limit)
+    });
+  } catch (error) {
+    { require('fs').appendFileSync('backend_error.log', new Date().toISOString() + ' ' + error.stack + '\n'); res.status(500).json({ error: error.message }); }
+  }
+});
+
+app.post('/api/audit', async (req, res) => {
+  try {
+    const { userId, userName, action, module, details } = req.body;
+    const { rows } = await pool.query(
+      'INSERT INTO "AuditLog" ("userId", "userName", "action", "module", "details") VALUES ($1, $2, $3, $4, $5) RETURNING *',
+      [userId || null, userName || null, action || 'ACTION', module || 'General', details || '']
+    );
+    res.status(201).json(rows[0]);
+  } catch (error) {
+    { require('fs').appendFileSync('backend_error.log', new Date().toISOString() + ' ' + error.stack + '\n'); res.status(500).json({ error: error.message }); }
   }
 });
 

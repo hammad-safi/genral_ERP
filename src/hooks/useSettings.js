@@ -1,6 +1,4 @@
 import { useEffect, useState } from 'react';
-import { liveQuery } from 'dexie';
-import { initDB, getDB } from '@/lib/db';
 
 const DEFAULT_CATEGORIES = ['General', 'Electronics', 'Clothing', 'Food', 'Medicine', 'Hardware', 'Accessories', 'Other'];
 
@@ -18,61 +16,49 @@ const getDefaultSettings = () => {
   };
 };
 
-const mapSettings = (rows) => {
-  const map = {};
-  rows.forEach((row) => {
-    map[row.key] = row.value;
+export const useSettings = () => {
+  const [settings, setSettings] = useState(() => {
+    const defaultSettings = getDefaultSettings();
+    try {
+      const storedSettings = localStorage.getItem('appSettings');
+      if (storedSettings) {
+        return { ...defaultSettings, ...JSON.parse(storedSettings) };
+      }
+    } catch (e) {
+      console.error('Failed to parse settings from localStorage', e);
+    }
+    return defaultSettings;
   });
 
-  const defaults = getDefaultSettings();
-
-  let categories = defaults.categories;
-  try {
-    if (map['categories']) {
-      const parsed = JSON.parse(map['categories']);
-      if (Array.isArray(parsed) && parsed.length > 0) categories = parsed;
-    }
-  } catch (e) { /* use defaults */ }
-
-  return {
-    shopName: map['shopName'] ?? defaults.shopName,
-    currency: map['currency'] ?? defaults.currency,
-    address: map['address'] ?? defaults.address,
-    phone: map['phone'] ?? defaults.phone,
-    logo: map['logo'] ?? defaults.logo,
-    receiptPrinter: map['receiptPrinter'] ?? defaults.receiptPrinter,
-    labelPrinter: map['labelPrinter'] ?? defaults.labelPrinter,
-    reportsPrinter: map['reportsPrinter'] ?? defaults.reportsPrinter,
-    categories,
-  };
-};
-
-export const useSettings = () => {
-  const defaultSettings = getDefaultSettings();
-  const [settings, setSettings] = useState(defaultSettings);
-
   useEffect(() => {
-    let subscription = null;
-    let mounted = true;
-
-    const loadSettings = async () => {
-      await initDB();
-      const currentDB = getDB();
-      
-      subscription = liveQuery(() => currentDB.settings.toArray()).subscribe({
-        next: (rows) => {
-          if (mounted) {
-            setSettings(mapSettings(rows));
-          }
-        },
-      });
+    const handleStorageChange = (e) => {
+      if (e.key === 'appSettings') {
+        try {
+          const newSettings = e.newValue ? JSON.parse(e.newValue) : getDefaultSettings();
+          setSettings(newSettings);
+        } catch (err) {
+          console.error(err);
+        }
+      }
+    };
+    
+    // Also support a custom event for same-window updates
+    const handleLocalUpdate = () => {
+      try {
+        const stored = localStorage.getItem('appSettings');
+        if (stored) {
+          setSettings({ ...getDefaultSettings(), ...JSON.parse(stored) });
+        }
+      } catch (err) {
+        console.error(err);
+      }
     };
 
-    loadSettings();
-
+    window.addEventListener('storage', handleStorageChange);
+    window.addEventListener('settings-updated', handleLocalUpdate);
     return () => {
-      mounted = false;
-      subscription?.unsubscribe();
+      window.removeEventListener('storage', handleStorageChange);
+      window.removeEventListener('settings-updated', handleLocalUpdate);
     };
   }, []);
 

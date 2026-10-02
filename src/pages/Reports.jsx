@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react';
-import { useLiveQuery } from 'dexie-react-hooks';
+
 import { Download, Printer } from 'lucide-react';
 import PageHeader from '@/components/PageHeader';
 import PrintWrapper from '@/components/PrintWrapper';
-import { getDB } from '@/lib/db';
+
 import { downloadJson, formatCurrency } from '@/lib/utils';
 import { useSettings } from '@/hooks/useSettings';
 import { useBusiness } from '@/contexts/BusinessContext';
@@ -26,13 +26,7 @@ export default function Reports() {
   const settings = useSettings();
   const currency = settings?.currency ?? 'Rs';
 
-  const dbVersion = useLiveQuery(
-    async () => {
-      const currentDB = getDB();
-      return (await currentDB.sales.count()) + (await currentDB.expenses.count()) + (await currentDB.purchases.count()) + (await currentDB.inventory.count());
-    },
-    []
-  );
+  const dbVersion = 1;
 
   const [range, setRange] = useState({ from: getLocalDateString(thirtyDaysAgo), to: getLocalDateString(today) });
   const cacheKey = JSON.stringify(range);

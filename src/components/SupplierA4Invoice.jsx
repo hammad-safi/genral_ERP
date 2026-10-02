@@ -1,6 +1,5 @@
 import React, { forwardRef, useState, useEffect } from 'react';
 import { formatCurrency, formatDate } from '@/lib/utils';
-import { getDB } from '@/lib/db';
 import Barcode from 'react-barcode';
 
 const SupplierA4Invoice = forwardRef(({ purchase, supplier, settings, currency, businessColor }, ref) => {
@@ -9,31 +8,18 @@ const SupplierA4Invoice = forwardRef(({ purchase, supplier, settings, currency, 
   useEffect(() => {
     const fetchBalance = async () => {
       if (!supplier || !purchase) return;
-      const currentDB = getDB();
-      const ledgerData = await currentDB.supplierLedger
-        .where('supplierId').equals(supplier.id)
-        .toArray();
-      
-      const totalCharged = ledgerData
-        .filter(e => e.type === 'charge' || e.type === 'purchase')
-        .reduce((sum, e) => sum + e.amount, 0);
-
-      const totalPaid = ledgerData
-        .filter(e => e.type === 'payment' || e.type === 'payment_reversal')
-        .reduce((sum, e) => sum + e.amount, 0);
-
-      const currentBalance = totalCharged - totalPaid;
-      
-      const newInvoice = purchase.totalCost || 0;
-      const paymentReceived = purchase.amountPaid || 0;
-      const previousBalance = currentBalance - newInvoice + paymentReceived;
-
-      setBalance({
-        previousBalance,
-        newInvoice,
-        paymentReceived,
-        newBalance: currentBalance
-      });
+      try {
+        const res = await fetch('/api/suppliers/' + supplier.id);
+        const data = await res.json();
+        
+        const newBalance = data.balance || 0;
+        const newInvoice = purchase.totalAmount || purchase.totalCost || 0;
+        const paymentReceived = purchase.amountPaid || 0;
+        
+        const previousBalance = newBalance - newInvoice + paymentReceived;
+        
+        setBalance({ previousBalance, newInvoice, paymentReceived, newBalance });
+      } catch (e) {}
     };
     fetchBalance();
   }, [supplier, purchase]);

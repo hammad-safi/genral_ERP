@@ -27,3 +27,9 @@ dist-ssr
 release/
 out/
 .vercel
+.env*
+scratch/
+*.txt
+backend/*.txt
+backend/export.json
+implementation_plan.md

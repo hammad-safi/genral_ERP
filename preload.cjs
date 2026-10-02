@@ -23,5 +23,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   }),
   getSystemId: () => ipcRenderer.invoke('get-system-id'),
   checkLicense: () => ipcRenderer.invoke('check-license'),
-  activateLicense: (key) => ipcRenderer.invoke('activate-license', key)
+  activateLicense: (key) => ipcRenderer.invoke('activate-license', key),
+  onSyncReceive: (callback) => {
+    ipcRenderer.on('sync-receive', (event, { reqId, ops }) => callback(reqId, ops));
+  },
+  replySync: (reqId, ops) => ipcRenderer.send('sync-reply', { reqId, ops })
 });

@@ -30,7 +30,7 @@ export default function CustomSelect({ value, onChange, options, placeholder = "
           isOpen ? 'border-blue-500 ring-1 ring-blue-500 bg-white' : 'border-slate-200 bg-slate-50 hover:border-slate-300'
         }`}
       >
-        <span className={selectedOption ? 'text-slate-900' : 'text-slate-500'}>
+        <span className={`truncate ${selectedOption ? 'text-slate-900' : 'text-slate-500'}`}>
           {selectedOption ? selectedOption.label : placeholder}
         </span>
         <svg className={`w-4 h-4 text-slate-400 transition-transform ${isOpen ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">

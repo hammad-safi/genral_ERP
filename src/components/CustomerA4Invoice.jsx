@@ -1,6 +1,5 @@
 import React, { forwardRef, useState, useEffect } from 'react';
 import { formatCurrency, formatDate } from '@/lib/utils';
-import { getDB } from '@/lib/db';
 import Barcode from 'react-barcode';
 
 const CustomerA4Invoice = forwardRef(({ sale, customer, amountPaid, settings, currency, businessColor }, ref) => {
@@ -9,31 +8,19 @@ const CustomerA4Invoice = forwardRef(({ sale, customer, amountPaid, settings, cu
   useEffect(() => {
     const fetchBalance = async () => {
       if (!customer || !sale) return;
-      const currentDB = getDB();
-      const ledgerData = await currentDB.customerLedger
-        .where('customerId').equals(customer.id)
-        .toArray();
-      
-      const totalCharged = ledgerData
-        .filter(e => e.type === 'charge' || e.type === 'purchase')
-        .reduce((sum, e) => sum + e.amount, 0);
-
-      const totalPaid = ledgerData
-        .filter(e => e.type === 'payment' || e.type === 'payment_reversal')
-        .reduce((sum, e) => sum + e.amount, 0);
-      
-      const currentBalance = totalCharged - totalPaid;
-      
-      const newInvoice = sale.totalAmount || 0;
-      const paymentReceived = amountPaid || 0;
-      const previousBalance = currentBalance - newInvoice + paymentReceived;
-      
-      setBalance({
-        previousBalance,
-        newInvoice,
-        paymentReceived,
-        newBalance: currentBalance
-      });
+      try {
+        const res = await fetch('/api/customers/' + customer.id);
+        const data = await res.json();
+        
+        const newBalance = data.balance || 0;
+        const newInvoice = sale.totalAmount || 0;
+        const paymentReceived = amountPaid || 0;
+        
+        // Since the backend already processed the sale, the current balance IS the new balance
+        const previousBalance = newBalance - newInvoice + paymentReceived;
+        
+        setBalance({ previousBalance, newInvoice, paymentReceived, newBalance });
+      } catch (e) {}
     };
     fetchBalance();
   }, [customer, sale, amountPaid]);

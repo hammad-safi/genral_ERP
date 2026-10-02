@@ -5,9 +5,17 @@ export const useMultiSelect = (items = []) => {
 
   // Reset selection when items change (e.g., after navigation or data refresh)
   useEffect(() => {
-    const itemIds = new Set(items.map(i => i.id))
-    // Remove any selected IDs that no longer exist in items
-    setSelectedIds(prev => prev.filter(id => itemIds.has(id)))
+    // filter out undefined items from sparse arrays before mapping
+    const validItems = items.filter(Boolean);
+    const itemIds = new Set(validItems.map(i => i.id));
+    
+    // Only update state if there's actually something to remove
+    // This prevents infinite loops if filter returns a new array but same contents
+    setSelectedIds(prev => {
+      const next = prev.filter(id => itemIds.has(id));
+      if (next.length !== prev.length) return next;
+      return prev;
+    });
   }, [items])
 
   const isSelected = (id) => selectedIds.includes(id)
@@ -19,17 +27,21 @@ export const useMultiSelect = (items = []) => {
   }
 
   const toggleAll = () => {
-    if (selectedIds.length === items.length) {
+    // Only consider fully loaded items for toggleAll
+    const validItems = items.filter(Boolean);
+    
+    if (selectedIds.length === validItems.length && validItems.length > 0) {
       setSelectedIds([])
     } else {
-      setSelectedIds(items.map(i => i.id))
+      setSelectedIds(validItems.map(i => i.id))
     }
   }
 
   const clearSelection = () => setSelectedIds([])
 
-  const isAllSelected = items.length > 0 && selectedIds.length === items.length
-  const isPartialSelected = selectedIds.length > 0 && selectedIds.length < items.length
+  const validItems = items.filter(Boolean);
+  const isAllSelected = validItems.length > 0 && selectedIds.length === validItems.length
+  const isPartialSelected = selectedIds.length > 0 && selectedIds.length < validItems.length
 
   return {
     selectedIds,

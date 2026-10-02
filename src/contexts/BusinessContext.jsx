@@ -1,10 +1,10 @@
 import { createContext, useContext, useState, useEffect, useCallback } from 'react';
-import { getDB, initDB, initDBWithSeed, initAllDBs } from '@/lib/db';
+
 
 export const BusinessContext = createContext({
   activeBusiness: 'business',
   switchBusiness: () => {},
-  db: getDB('business'),
+  
   businessName: 'Business Management System',
   businessIcon: '💊',
   businessColor: 'emerald',
@@ -39,22 +39,9 @@ export const BusinessProvider = ({ children }) => {
   const [mounted, setMounted] = useState(false);
   const [isInitialized, setIsInitialized] = useState(false);
 
-  // Initialize business database on mount
+  // Removed local db initialization
   useEffect(() => {
-    const initializeDatabases = async () => {
-      try {
-        const isDev = import.meta.env.DEV;
-        console.log(`Initializing Business database (${isDev ? 'development' : 'production'} mode)...`);
-        
-        await initDB('business');
-        
-        console.log('Business database ready.');
-        setIsInitialized(true);
-      } catch (error) {
-        console.error('Failed to initialize database:', error);
-      }
-    };
-    initializeDatabases();
+    setIsInitialized(true);
   }, []);
 
   // Set mounted
@@ -65,13 +52,6 @@ export const BusinessProvider = ({ children }) => {
   const switchBusiness = useCallback(async (business) => {
     setActiveBusiness(business);
     localStorage.setItem('activeBusiness', business);
-    const isDev = import.meta.env.DEV;
-    
-    if (isDev && (await getDB(business).products.count()) === 0) {
-      await initDB(business);
-    } else {
-      await initDB(business);
-    }
   }, []);
 
   const config = businessConfig[activeBusiness];
@@ -82,7 +62,7 @@ export const BusinessProvider = ({ children }) => {
       <BusinessContext.Provider value={{
         activeBusiness: 'business',
         switchBusiness,
-        db: getDB('business'),
+        
         businessName: 'Business Management System',
         businessIcon: '💊',
         businessColor: 'emerald',
@@ -102,7 +82,7 @@ export const BusinessProvider = ({ children }) => {
     <BusinessContext.Provider value={{
       activeBusiness,
       switchBusiness,
-      db: getDB(activeBusiness),
+      
       businessName: config.name,
       businessIcon: config.icon,
       businessColor: config.color,

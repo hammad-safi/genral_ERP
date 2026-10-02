@@ -23,8 +23,8 @@ export default function DashboardCharts({ lineData, barData, recentTransactions 
     gridColor: '#f1f5f9',
     axisColor: '#e2e8f0',
     lineColor: '#2563eb', // blue-600
-    revenueColor: '#3b82f6',
-    expenseColor: '#ef4444',
+    revenueColor: '#2563eb', // vibrant blue
+    expenseColor: '#10b981', // emerald green matching reference
   };
 
   return (

@@ -1,12 +1,12 @@
 import { useState, useEffect } from 'react';
 import { Link, useLocation } from 'react-router-dom';
+import { useAuth } from '@/contexts/AuthContext';
 import { useSettings } from '@/hooks/useSettings';
 import { useBusiness, businessConfig } from '@/contexts/BusinessContext';
-import generalStoreLogo from '/Business Management System.jpeg?url';
-import honeyLogo from '/Honey.jpeg?url';
-import cosmeticsLogo from '/Cosmetics.jpeg?url';
 import {
   Home,
+  LogOut,
+  Shield,
   Box,
   Layers,
   ShoppingCart,
@@ -16,97 +16,83 @@ import {
   BarChart4,
   Settings,
   X,
-  GraduationCap,
   User,
-  ChevronDown,
-  Check,
   Calendar,
   ChevronLeft,
   ChevronRight,
   FileText,
   Tags,
 } from 'lucide-react';
-const DEFAULT_LOGO = honeyLogo;
-
-// Get business-specific logo
-// Get business logo (can be customized)
-function getBusinessLogo() {
-  return honeyLogo; // Using honeyLogo as a placeholder, user can change in settings
-}
 
 // Get navigation links
-function getLinks() {
-  return [
-    { path: '/', label: 'Dashboard', icon: Home },
-    { path: '/pos', label: 'POS', icon: ShoppingCart },
-    { path: '/products', label: 'Products', icon: Box },
-    { path: '/categories', label: 'Categories', icon: Tags },
-    { path: '/inventory', label: 'Inventory', icon: Layers },
-    { path: '/sales', label: 'Sales', icon: FileText },
-    { path: '/purchases', label: 'Purchases', icon: Truck },
-    { path: '/suppliers', label: 'Suppliers', icon: Users },
-    { path: '/customers', label: 'Customers', icon: User },
-    { path: '/expenses', label: 'Expenses', icon: Wallet },
-    { path: '/monthly-records', label: 'Monthly Records', icon: Calendar },
-    { path: '/reports', label: 'Reports', icon: BarChart4 },
-    { path: '/settings', label: 'Settings', icon: Settings },
+function getLinks(hasPermission) {
+  const links = [
+    { path: '/', label: 'Dashboard', icon: Home, module: 'Dashboard' },
+    { path: '/pos', label: 'POS', icon: ShoppingCart, module: 'POS' },
+    { path: '/products', label: 'Products', icon: Box, module: 'Products' },
+    { path: '/categories', label: 'Categories', icon: Tags, module: 'Categories' },
+    { path: '/inventory', label: 'Inventory', icon: Layers, module: 'Inventory' },
+    { path: '/sales', label: 'Sales', icon: FileText, module: 'Sales' },
+    { path: '/purchases', label: 'Purchases', icon: Truck, module: 'Purchases' },
+    { path: '/suppliers', label: 'Suppliers', icon: Users, module: 'Suppliers' },
+    { path: '/customers', label: 'Customers', icon: User, module: 'Customers' },
+    { path: '/expenses', label: 'Expenses', icon: Wallet, module: 'Expenses' },
+    { path: '/monthly-records', label: 'Monthly Records', icon: Calendar, module: 'Monthly Records' },
+    { path: '/reports', label: 'Reports', icon: BarChart4, module: 'Reports' },
+    { path: '/users-roles', label: 'Users & Roles', icon: Shield, module: 'Users' },
+    { path: '/settings', label: 'Settings', icon: Settings, module: 'Settings' },
   ];
+  return links.filter(link => !hasPermission || hasPermission(link.module, 'View'));
 }
 
 export default function Navbar() {
   const location = useLocation();
   const settings = useSettings();
-  const { businessColor } = useBusiness();
+  const { user, logout, hasPermission } = useAuth();
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [isCollapsed, setIsCollapsed] = useState(false);
-  const shopName = settings?.shopName ?? 'Business Management System';
-  const currentConfig = businessConfig.business;
+  const shopName = settings?.shopName ?? 'webzen';
 
   useEffect(() => {
     document.title = shopName;
     if (window.electronAPI && window.electronAPI.updateWindowTitle) {
       window.electronAPI.updateWindowTitle(shopName);
     }
-    
-    // Auto-migrate old names in the user's local database
-    if (shopName === 'General Store' || shopName === 'Pharmacy Store') {
-      import('@/lib/db').then(({ getDB }) => {
-        getDB().settings.put({ key: 'shopName', value: 'Business Management System' });
-      });
-    }
   }, [shopName]);
 
   return (
     <>
+      {/* Mobile Drawer Hamburger */}
       <button
         type="button"
         onClick={() => setDrawerOpen(true)}
-        className="fixed left-4 top-4 z-50 flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold shadow-lg lg:hidden"
+        className="fixed left-4 top-4 z-50 flex items-center gap-2 rounded-2xl border border-slate-700 bg-[#0B1739] text-white px-3 py-2 text-sm font-semibold shadow-lg lg:hidden"
       >
         <span className="text-lg">☰</span>
       </button>
 
-      <nav className={`hidden flex-none flex-col border-r border-slate-200 bg-white py-6 text-slate-900 lg:flex relative transition-all duration-300 ${isCollapsed ? 'w-20 px-2' : 'w-72 px-4'}`}>
+      {/* Main Desktop Sidebar */}
+      <nav className={`hidden flex-none flex-col border-r border-[#162244] bg-[#0B1739] py-5 text-white lg:flex relative transition-all duration-300 z-30 ${isCollapsed ? 'w-20 px-2' : 'w-64 px-3'}`}>
 
         {/* Logo, Shop Name, and Collapse Toggle */}
-        <div className={`mb-6 flex ${isCollapsed ? 'flex-col items-center gap-4' : 'items-center justify-between px-2'} transition-all`}>
+        <div className={`mb-6 flex ${isCollapsed ? 'flex-col items-center gap-3' : 'items-center justify-between px-2'} transition-all`}>
           <div className={`flex items-center ${isCollapsed ? 'justify-center' : 'gap-3'} overflow-hidden transition-all`}>
             {settings?.logo ? (
-              <img src={settings.logo} alt="Logo" className={`${isCollapsed ? 'h-10 w-10' : 'h-10 w-10'} rounded-2xl object-cover shadow-sm transition-all shrink-0`} />
+              <img src={settings.logo} alt="Logo" className={`${isCollapsed ? 'h-9 w-9' : 'h-9 w-9'} rounded-xl object-cover shadow-sm shrink-0`} />
             ) : (
-              <div className={`${isCollapsed ? 'h-10 w-10 text-xl' : 'h-10 w-10 text-xl'} rounded-2xl bg-blue-100 flex items-center justify-center shadow-sm transition-all shrink-0`}>
-                🏪
+              <div className="h-9 w-9 rounded-xl bg-gradient-to-tr from-cyan-500 to-blue-600 flex items-center justify-center font-black text-white text-sm shadow-md shrink-0 tracking-tighter">
+                WZ
               </div>
             )}
             {!isCollapsed && (
-              <div className="overflow-hidden whitespace-nowrap">
-                <h1 className="text-base font-semibold text-slate-900 truncate pr-2">{shopName}</h1>
+              <div className="overflow-hidden whitespace-nowrap flex items-center gap-1.5">
+                <span className="text-lg font-black tracking-tight text-white">{shopName}</span>
               </div>
             )}
           </div>
           <button
             onClick={() => setIsCollapsed(!isCollapsed)}
-            className="p-1.5 rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-600 transition-colors shrink-0"
+            className="p-1.5 rounded-lg text-slate-400 hover:bg-white/10 hover:text-white transition-colors shrink-0"
             title={isCollapsed ? "Expand sidebar" : "Collapse sidebar"}
           >
             {isCollapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronLeft className="h-4 w-4" />}
@@ -114,29 +100,26 @@ export default function Navbar() {
         </div>
 
         {/* Navigation Links */}
-        <div className="space-y-1 flex-1 overflow-y-auto overflow-x-hidden no-scrollbar">
-          {getLinks().map((item) => {
+        <div className="flex-1 space-y-1 overflow-y-auto overflow-x-hidden py-1 px-1 scrollbar-thin scrollbar-thumb-slate-700 scrollbar-track-transparent">
+          {getLinks(hasPermission).map((item) => {
             const Icon = item.icon;
             const active = location.pathname === item.path;
             return (
               <Link
                 key={item.path}
                 to={item.path}
-                className={`group relative flex items-center ${isCollapsed ? 'justify-center px-0 mx-2' : 'gap-3 px-4 mx-2'} rounded-xl py-2.5 text-sm font-medium transition-all duration-150 ${
+                className={`group relative flex items-center ${isCollapsed ? 'justify-center px-0' : 'gap-3 px-3.5'} rounded-xl py-2.5 text-sm font-medium transition-all duration-150 ${
                   active
-                    ? 'bg-blue-50 text-blue-700'
-                    : 'text-slate-600 hover:bg-slate-50'
+                    ? 'bg-blue-600 text-white shadow-md shadow-blue-600/30'
+                    : 'text-slate-300 hover:text-white hover:bg-white/5'
                 }`}
               >
-                {active && !isCollapsed && <div className="absolute left-0 top-2 bottom-2 w-1 bg-blue-600 rounded-r-full"></div>}
-                {active && isCollapsed && <div className="absolute left-0 top-2 bottom-2 w-1 bg-blue-600 rounded-full"></div>}
-                
-                <Icon className={`h-5 w-5 flex-shrink-0 transition-colors ${active ? 'text-blue-600' : 'text-slate-400 group-hover:text-slate-600'}`} />
+                <Icon className={`h-5 w-5 flex-shrink-0 transition-colors ${active ? 'text-white' : 'text-slate-400 group-hover:text-slate-200'}`} />
                 {!isCollapsed && <span className="truncate">{item.label}</span>}
                 
                 {/* Custom tooltip for collapsed mode */}
                 {isCollapsed && (
-                  <div className="absolute left-14 rounded-md bg-slate-800 px-2 py-1 text-xs font-semibold text-white opacity-0 transition-opacity group-hover:opacity-100 pointer-events-none whitespace-nowrap z-50 shadow-lg">
+                  <div className="absolute left-16 rounded-md bg-slate-900 border border-slate-700 px-2.5 py-1 text-xs font-semibold text-white opacity-0 transition-opacity group-hover:opacity-100 pointer-events-none whitespace-nowrap z-50 shadow-xl">
                     {item.label}
                   </div>
                 )}
@@ -145,28 +128,45 @@ export default function Navbar() {
           })}
         </div>
 
-        {/* Business Info at Bottom */}
-        <div className={`pt-4 mt-auto border-t border-slate-100 flex transition-all ${isCollapsed ? 'justify-center' : 'flex-col px-4'}`}>
-          {!isCollapsed ? (
-            <div className="space-y-1 text-xs text-slate-500">
-              {settings?.phone && (
-                <div className="flex items-center gap-2 truncate">
-                  <span className="font-medium text-slate-700">{settings.phone}</span>
+        {/* Store Info Label */}
+        {!isCollapsed && (
+          <div className="px-3 pt-3">
+            <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">Store Info</p>
+          </div>
+        )}
+
+        {/* User Profile & Logout */}
+        <div className="mt-2 pt-2">
+          <div className={`flex items-center justify-between bg-[#132247] rounded-2xl border border-white/10 ${isCollapsed ? 'p-2 justify-center' : 'p-2.5'}`}>
+            <div className="flex items-center gap-2.5 overflow-hidden">
+              <div className="w-8 h-8 rounded-full bg-blue-600 flex items-center justify-center text-white font-bold text-xs uppercase shrink-0 shadow-inner">
+                {user?.username?.[0] || 'A'}
+              </div>
+              {!isCollapsed && (
+                <div className="min-w-0">
+                  <p className="text-xs font-bold text-white truncate leading-tight">{user?.username || 'admin'}</p>
+                  <p className="text-[10px] uppercase tracking-wider font-semibold text-slate-400 leading-tight mt-0.5">{user?.role || 'ADMIN'}</p>
                 </div>
               )}
-              {settings?.address && (
-                <div className="truncate opacity-80" title={settings.address}>
-                  {settings.address}
-                </div>
-              )}
-              {!settings?.phone && !settings?.address && (
-                <div className="opacity-80">Store Info</div>
-              )}
             </div>
-          ) : (
-            <div className="h-8 w-8 rounded-full bg-slate-50 flex items-center justify-center text-slate-400 shadow-sm border border-slate-100" title={settings?.phone || shopName}>
-              <Home className="h-3.5 w-3.5" />
-            </div>
+            {!isCollapsed && (
+              <button
+                onClick={logout}
+                className="p-1.5 text-slate-400 hover:text-red-400 hover:bg-white/10 rounded-xl transition-colors shrink-0"
+                title="Sign Out"
+              >
+                <LogOut className="w-4 h-4" />
+              </button>
+            )}
+          </div>
+          {isCollapsed && (
+            <button
+              onClick={logout}
+              className="mt-2 w-full p-2 text-slate-400 hover:text-red-400 hover:bg-white/10 rounded-xl transition-colors flex justify-center"
+              title="Sign Out"
+            >
+              <LogOut className="w-4 h-4" />
+            </button>
           )}
         </div>
       </nav>
@@ -174,43 +174,29 @@ export default function Navbar() {
       {/* Mobile Drawer */}
       {drawerOpen && (
         <div className="fixed inset-0 z-50 lg:hidden">
-          <div className="absolute inset-0 bg-slate-900/20" onClick={() => setDrawerOpen(false)} />
-          <div className="absolute left-0 top-0 h-full w-72 overflow-y-auto bg-white shadow-2xl transition-transform duration-300">
-            <div className="flex items-center justify-between border-b border-slate-200 px-4 py-4">
+          <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" onClick={() => setDrawerOpen(false)} />
+          <div className="absolute left-0 top-0 h-full w-72 overflow-y-auto bg-[#0B1739] text-white shadow-2xl transition-transform duration-300 flex flex-col p-4">
+            <div className="flex items-center justify-between border-b border-white/10 pb-4">
               <div className="flex items-center gap-3">
-                {settings?.logo ? (
-                  <img 
-                    src={settings.logo} 
-                    alt="Shop Logo" 
-                    className="h-12 w-12 rounded-xl object-cover shadow-sm"
-                  />
-                ) : (
-                  <div className="h-12 w-12 rounded-xl bg-slate-100 flex items-center justify-center text-2xl shadow-sm">
-                    🏪
-                  </div>
-                )}
+                <div className="h-9 w-9 rounded-xl bg-gradient-to-tr from-cyan-500 to-blue-600 flex items-center justify-center font-black text-white text-sm shadow-md shrink-0">
+                  WZ
+                </div>
                 <div>
-                  <h1 className="text-base font-semibold text-slate-900">{shopName}</h1>
+                  <h1 className="text-base font-bold text-white">{shopName}</h1>
                 </div>
               </div>
               <button
                 type="button"
                 onClick={() => setDrawerOpen(false)}
-                className="rounded-xl border border-slate-200 bg-slate-50 p-2 text-slate-600"
+                className="rounded-xl border border-white/10 bg-white/5 p-2 text-slate-300 hover:text-white"
               >
                 <X className="h-4 w-4" />
               </button>
             </div>
 
-            {/* Mobile Business Switcher */}
-            <div className="px-4 py-3 border-b border-slate-200">
-              <p className="text-xs text-slate-600 mb-1">Business Management System</p>
-              <p className="text-sm font-semibold text-slate-900">{currentConfig.name}</p>
-            </div>
-
             {/* Mobile Navigation Links */}
-            <div className="space-y-1 px-4 py-4">
-              {getLinks().map((item) => {
+            <div className="space-y-1 py-4 flex-1 overflow-y-auto">
+              {getLinks(hasPermission).map((item) => {
                 const Icon = item.icon;
                 const active = location.pathname === item.path;
                 return (
@@ -220,15 +206,37 @@ export default function Navbar() {
                     onClick={() => setDrawerOpen(false)}
                     className={`flex items-center gap-3 rounded-xl px-4 py-3 text-sm font-medium transition-all ${
                       active
-                        ? 'bg-blue-50 text-blue-700'
-                        : 'text-slate-600 hover:bg-slate-50'
+                        ? 'bg-blue-600 text-white shadow-md'
+                        : 'text-slate-300 hover:bg-white/5 hover:text-white'
                     }`}
                   >
-                    <Icon className={`h-5 w-5 ${active ? 'text-blue-600' : ''}`} />
+                    <Icon className="h-5 w-5" />
                     {item.label}
                   </Link>
                 );
               })}
+            </div>
+
+            {/* Mobile User Profile & Logout */}
+            <div className="pt-4 border-t border-white/10">
+              <div className="flex items-center justify-between bg-[#132247] p-3 rounded-2xl border border-white/10">
+                <div className="flex items-center gap-3">
+                  <div className="w-9 h-9 rounded-full bg-blue-600 flex items-center justify-center text-white font-bold uppercase shrink-0">
+                    {user?.username?.[0] || 'A'}
+                  </div>
+                  <div>
+                    <p className="text-sm font-bold text-white">{user?.username || 'admin'}</p>
+                    <p className="text-xs font-medium text-slate-400">{user?.role || 'ADMIN'}</p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => { setDrawerOpen(false); logout(); }}
+                  className="p-2 text-slate-400 hover:text-red-400 hover:bg-white/10 rounded-xl"
+                  title="Sign Out"
+                >
+                  <LogOut className="w-5 h-5" />
+                </button>
+              </div>
             </div>
           </div>
         </div>

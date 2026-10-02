@@ -1,12 +1,13 @@
+import { api } from '@/lib/api';
 import { useEffect, useState, useCallback, memo, forwardRef, useImperativeHandle, useRef, useMemo } from 'react';
+import { useApiPagination } from '@/hooks/useApiPagination';
 import { useNavigate } from 'react-router-dom';
-import { Plus, Edit, Trash2, X, BookOpen, Search } from 'lucide-react';
+import { Plus, Edit, Trash2, X, BookOpen, Search, Truck, Clock, CheckCircle } from 'lucide-react';
 import PageHeader from '@/components/PageHeader';
 import StatsCard from '@/components/StatsCard';
 import ConfirmDialog from '@/components/ConfirmDialog';
 import BulkDeleteBar from '@/components/BulkDeleteBar';
-import { initDB, getDB } from '@/lib/db';
-import { useDexieOffsetPagination, clearPaginationCache } from '@/hooks/useDexiePagination';
+
 import { useMultiSelect } from '@/hooks/useMultiSelect';
 import { useDebounce } from '@/hooks/useDebounce';
 import GlobalTable from '@/components/GlobalTable';
@@ -54,24 +55,15 @@ const SupplierFormModal = memo(forwardRef(({ onSuccess }, ref) => {
   const saveSupplier = async (event) => {
     event.preventDefault();
     if (!form.name) return;
-    const currentDB = getDB();
+    
     if (selectedSupplier) {
-      await currentDB.suppliers.update(selectedSupplier.id, form);
+      await api.updateSupplier(selectedSupplier.id, form);
+
       onSuccess('edit', { id: selectedSupplier.id, ...form });
     } else {
-      const id = await currentDB.suppliers.add({ ...form, createdAt: new Date().toISOString() });
       
-      if (form.openingBalance) {
-        await currentDB.supplierLedger.add({
-          supplierId: id,
-          type: Number(form.openingBalance) > 0 ? 'charge' : 'payment',
-          amount: Math.abs(Number(form.openingBalance)),
-          description: 'Opening Balance',
-          date: new Date().toISOString()
-        });
-      }
-
-      onSuccess('add', { id, ...form });
+    const res = await api.createSupplier(form);
+      onSuccess('add', res);
     }
     setOpenForm(false);
   };
@@ -193,62 +185,30 @@ export default function Suppliers() {
     return query.reverse();
   }, [debouncedSearchQuery]);
 
-  const transformChunk = useCallback(async (chunk) => {
-    const currentDB = getDB();
-    const supplierIds = chunk.map(s => s.id);
-    const ledgerEntries = await currentDB.supplierLedger.where('supplierId').anyOf(supplierIds).toArray();
-    
-    const balanceMap = new Map();
-    for (const e of ledgerEntries) {
-      const bal = balanceMap.get(e.supplierId) || 0;
-      if (e.type === 'charge' || e.type === 'purchase') {
-        balanceMap.set(e.supplierId, bal + e.amount);
-      } else if (e.type === 'payment' || e.type === 'payment_reversal') {
-        balanceMap.set(e.supplierId, bal - e.amount);
-      }
-    }
+  
+    const transformChunk = useCallback(async (chunk) => {
+      return chunk;
+    }, []);
 
-    return chunk.map(supplier => ({
-      ...supplier,
-      balance: balanceMap.get(supplier.id) || 0
-    }));
-  }, []);
   const [limit, setLimit] = useState(20);
   const [currentPage, setCurrentPage] = useState(1);
   useEffect(() => { setCurrentPage(1); }, [debouncedSearchQuery, limit]);
 
-  const { data: visibleData, totalCount, isLoading, refresh: loadSuppliers } = useDexieOffsetPagination(
-    queryBuilder, 
-    [debouncedSearchQuery], 
-    currentPage, 
-    limit, 
-    transformChunk
-  );
+  const { data: visibleData, totalItems: totalCount, loading: isLoading, refresh: loadSuppliers, setPageIndex } = useApiPagination({
+    endpoint: '/api/suppliers',
+    pageSize: limit,
+    search: debouncedSearchQuery
+  });
   const { selectedIds, isSelected, toggleOne, toggleAll, clearSelection, isAllSelected, selectedCount } = useMultiSelect(visibleData);
 
   useEffect(() => {
     const calcStats = async () => {
-      const currentDB = getDB();
-      let totalP = 0;
-      const balances = {};
-      
-      await currentDB.supplierLedger.each(e => {
-        if (!balances[e.supplierId]) balances[e.supplierId] = 0;
-        if (e.type === 'charge' || e.type === 'purchase') balances[e.supplierId] += e.amount;
-        if (e.type === 'payment' || e.type === 'payment_reversal') {
-          balances[e.supplierId] -= e.amount;
-          if (e.type === 'payment') totalP += e.amount;
-          if (e.type === 'payment_reversal') totalP -= e.amount;
+      try {
+        const { summary } = await api.getSuppliers();
+        if (summary) {
+          setStats({ totalSuppliers: summary.totalCount || 0, totalOwed: summary.totalOwed || 0, totalPaid: summary.totalPaid || 0 });
         }
-      });
-      
-      let tOwed = 0;
-      for (const bal of Object.values(balances)) {
-        if (bal > 0) tOwed += bal;
-      }
-      
-      const tSuppliers = await currentDB.suppliers.count();
-      setStats({ totalSuppliers: tSuppliers, totalOwed: tOwed, totalPaid: totalP });
+      } catch (err) { console.error(err); }
     };
     calcStats();
   }, [totalCount]);
@@ -256,10 +216,11 @@ export default function Suppliers() {
   const openNewSupplier = () => modalRef.current?.openNew();
   const openEditSupplier = (supplier) => modalRef.current?.openEdit(supplier);
 
-  const deleteSupplier = async () => {
-    if (!editId) return;
-    const currentDB = getDB();
-    await currentDB.suppliers.delete(editId);
+  
+    const deleteSupplier = async () => {
+      if (!editId) return;
+      await api.deleteSupplier(editId);
+
     clearPaginationCache('suppliers');
     loadSuppliers();
     setEditId(null);
@@ -276,8 +237,7 @@ export default function Suppliers() {
     setConfirmBulkDelete(false);
     setIsDeleting(true);
     try {
-      const currentDB = getDB();
-      await currentDB.suppliers.bulkDelete(selectedIds);
+      await api.deleteSuppliersBulk(selectedRows || selectedIds);
       clearPaginationCache('suppliers');
       loadSuppliers();
       clearSelection();
@@ -309,40 +269,47 @@ export default function Suppliers() {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 pb-2">
-        <h1 className="text-2xl sm:text-3xl font-bold text-slate-900 tracking-tight">Supplier Management</h1>
-        <div className="flex items-center gap-3 shrink-0 mt-2 md:mt-0">
-          <GlobalButton
-            icon={Plus}
+      <PageHeader 
+        icon={Truck}
+        title="Supplier Management"
+        description="Maintain vendor relationships, track procurement balances, and monitor payables."
+        action={
+          <button
+            type="button"
             onClick={() => modalRef.current?.openNew()}
+            className="bg-blue-600 hover:bg-blue-700 text-white font-medium text-sm px-4 py-2.5 rounded-xl shadow-xs flex items-center gap-2 transition-all"
           >
+            <Plus className="w-4 h-4 stroke-[2.5]" />
             Add Supplier
-          </GlobalButton>
-        </div>
-      </div>
+          </button>
+        }
+      />
 
       <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        <div className="rounded-xl border border-slate-200 border-l-4 border-l-blue-500 bg-white p-5 shadow-sm flex flex-col justify-between hover:-translate-y-0.5 hover:shadow-card-hover transition-all duration-200">
-          <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Total Suppliers</p>
-          <div className="mt-3">
-            <p className="text-2xl font-bold text-slate-900">{stats.totalSuppliers.toString()}</p>
-            <p className="text-[11px] font-medium text-slate-500 mt-1">Active supplier accounts</p>
-          </div>
-        </div>
-        <div className="rounded-xl border border-slate-200 border-l-4 border-l-blue-500 bg-white p-5 shadow-sm flex flex-col justify-between hover:-translate-y-0.5 hover:shadow-card-hover transition-all duration-200">
-          <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Total Payable</p>
-          <div className="mt-3">
-            <p className="text-2xl font-bold text-slate-900">{formatCurrency(stats.totalOwed, currency)}</p>
-            <p className="text-[11px] font-medium text-slate-500 mt-1">Outstanding balances</p>
-          </div>
-        </div>
-        <div className="rounded-xl border border-slate-200 border-l-4 border-l-blue-500 bg-white p-5 shadow-sm flex flex-col justify-between hover:-translate-y-0.5 hover:shadow-card-hover transition-all duration-200">
-          <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Total Paid</p>
-          <div className="mt-3">
-            <p className="text-2xl font-bold text-slate-900">{formatCurrency(stats.totalPaid, currency)}</p>
-            <p className="text-[11px] font-medium text-slate-500 mt-1">Payments made</p>
-          </div>
-        </div>
+        <StatsCard 
+          title="Total Suppliers" 
+          value={stats.totalSuppliers.toString()} 
+          description="Active supplier accounts" 
+          color="blue" 
+          icon={Truck} 
+          arrow="forward"
+        />
+        <StatsCard 
+          title="Total Payable" 
+          value={formatCurrency(stats.totalOwed, currency)} 
+          description="Outstanding balances" 
+          color="amber" 
+          icon={Clock} 
+          arrow="forward"
+        />
+        <StatsCard 
+          title="Total Paid" 
+          value={formatCurrency(stats.totalPaid, currency)} 
+          description="Payments made" 
+          color="emerald" 
+          icon={CheckCircle} 
+          arrow="forward"
+        />
       </div>
 
       <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
@@ -412,7 +379,7 @@ export default function Suppliers() {
 
           return (
             <div className="mt-2">
-              <GlobalTable
+              <GlobalTable onLoadMore={() => setPageIndex(p => p + 1)} hasMore={visibleData.length < totalCount}
                 data={visibleData}
                 columns={tableColumns}
                 renderRow={(supplier, virtualIndex, measureRef) => {
@@ -481,54 +448,7 @@ export default function Suppliers() {
                 }
               />
               
-              <div className="mt-4 flex flex-col sm:flex-row items-center justify-between gap-4 pt-4 border-t border-slate-200">
-                <div className="flex items-center gap-4 text-xs text-slate-500">
-                  <div>
-                    Showing <span className="font-bold text-slate-700">{startItem}</span> to <span className="font-bold text-slate-700">{endItem}</span> of <span className="font-bold text-slate-700">{totalCount}</span> items
-                  </div>
-                  <div className="h-3 w-px bg-slate-200"></div>
-                  <div className="flex items-center gap-2">
-                    <span>Rows:</span>
-                    <RowsDropdown limit={limit} setLimit={setLimit} />
-                  </div>
-                  {isLoading && <span className="ml-2 animate-pulse text-blue-500">Loading...</span>}
-                </div>
-
-                <div className="flex items-center rounded-lg border border-slate-200 bg-white p-1 shadow-sm text-sm font-medium text-slate-600">
-                  <button 
-                    onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
-                    disabled={currentPage === 1}
-                    className={`flex h-7 w-7 items-center justify-center rounded ${currentPage === 1 ? 'text-slate-300 cursor-not-allowed' : 'text-slate-600 hover:bg-slate-50 hover:text-blue-600'}`}
-                  >
-                    <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" /></svg>
-                  </button>
-                  
-                  {getPageNumbers().map((pageNum, idx) => (
-                    <button
-                      key={idx}
-                      disabled={pageNum === '...'}
-                      onClick={() => typeof pageNum === 'number' && setCurrentPage(pageNum)}
-                      className={`flex h-7 w-7 items-center justify-center rounded ${
-                        pageNum === '...' 
-                          ? 'text-slate-400 cursor-default' 
-                          : pageNum === currentPage 
-                            ? 'bg-blue-50 text-blue-600' 
-                            : 'hover:bg-slate-50'
-                      }`}
-                    >
-                      {pageNum}
-                    </button>
-                  ))}
-
-                  <button 
-                    onClick={() => setCurrentPage(prev => Math.min(totalPages, prev + 1))}
-                    disabled={currentPage === totalPages}
-                    className={`flex h-7 w-7 items-center justify-center rounded ${currentPage === totalPages ? 'text-slate-300 cursor-not-allowed' : 'text-slate-600 hover:bg-slate-50 hover:text-blue-600'}`}
-                  >
-                    <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
-                  </button>
-                </div>
-              </div>
+              
             </div>
           );
         }, [visibleData, currentPage, limit, totalCount, isLoading, isAllSelected, selectedIds])}

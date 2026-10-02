@@ -1,0 +1,9 @@
+const { Pool } = require('pg');
+const pool = new Pool({ connectionString: 'postgresql://postgres:danger1718@localhost:5432/shop_erp?schema=public' });
+
+async function checkLedger() {
+  const res = await pool.query(`SELECT column_name, data_type FROM information_schema.columns WHERE table_name = 'CustomerLedger'`);
+  console.log(res.rows.map(r => `${r.column_name} (${r.data_type})`).join(', '));
+  process.exit(0);
+}
+checkLedger();

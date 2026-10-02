@@ -1,9 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { X, User, CreditCard, Banknote, Wallet, BookOpen, Plus, Search } from 'lucide-react';
-import { getDB } from '@/lib/db';
 import { formatCurrency, removeLeadingZeros } from '@/lib/utils';
 import { useDebounce } from '@/hooks/useDebounce';
-import { useLiveQuery } from 'dexie-react-hooks';
 
 const PAYMENT_METHODS = [
   { id: 'Cash', label: 'Cash', icon: Banknote },
@@ -26,40 +24,37 @@ export default function CheckoutModal({ open, totalAmount, currency, onClose, on
 
   const debouncedCustomerSearch = useDebounce(customerSearch, 300);
 
-  const customerResults = useLiveQuery(
-    async () => {
-      if (!debouncedCustomerSearch || debouncedCustomerSearch.length < 1) return [];
-      const term = debouncedCustomerSearch.toLowerCase();
-      const currentDB = getDB();
-      return await currentDB.customers
-        .where('name').startsWithIgnoreCase(term)
-        .or('phone').startsWithIgnoreCase(term)
-        .limit(10)
-        .toArray();
-    },
-    [debouncedCustomerSearch],
-    []
-  );
-
-  // Load customer balance when selected
+  const [customerResults, setCustomerResults] = useState([]);
+  
   useEffect(() => {
-    const loadBalance = async () => {
-      if (!selectedCustomer?.id) {
-        setCustomerBalance(null);
+    const fetchCustomers = async () => {
+      if (!debouncedCustomerSearch || debouncedCustomerSearch.length < 1) {
+        setCustomerResults([]);
         return;
       }
-      const currentDB = getDB();
-      const ledger = await currentDB.customerLedger.where('customerId').equals(selectedCustomer.id).toArray();
-      const charged = ledger
-        .filter(e => e.type === 'charge' || e.type === 'purchase')
-        .reduce((sum, e) => sum + e.amount, 0);
-      const paid = ledger
-        .filter(e => e.type === 'payment' || e.type === 'payment_reversal')
-        .reduce((sum, e) => sum + e.amount, 0);
-      setCustomerBalance({ charged, paid, balance: charged - paid });
+      try {
+        const res = await fetch('/api/customers?search=' + encodeURIComponent(debouncedCustomerSearch) + '&limit=10');
+        const data = await res.json();
+        setCustomerResults(data.data || []);
+      } catch (error) {
+        console.error(error);
+        setCustomerResults([]);
+      }
     };
-    loadBalance();
-  }, [selectedCustomer?.id]);
+    fetchCustomers();
+  }, [debouncedCustomerSearch]);
+
+  useEffect(() => {
+    if (!selectedCustomer?.id) {
+      setCustomerBalance(null);
+      return;
+    }
+    // The backend /api/customers already returns balance and totalPaid
+    const charged = (selectedCustomer.balance || 0) + (selectedCustomer.totalPaid || 0);
+    const paid = selectedCustomer.totalPaid || 0;
+    const balance = selectedCustomer.balance || 0;
+    setCustomerBalance({ charged, paid, balance });
+  }, [selectedCustomer]);
 
   // Reset state when modal opens
   useEffect(() => {
@@ -87,31 +82,28 @@ export default function CheckoutModal({ open, totalAmount, currency, onClose, on
 
   const handleAddNewCustomer = async () => {
     if (!newCustomerForm.name.trim()) return;
-    const currentDB = getDB();
-    const customerId = await currentDB.customers.add({
-      name: newCustomerForm.name.trim(),
-      phone: newCustomerForm.phone.trim() || '',
-      email: newCustomerForm.email.trim() || '',
-      address: newCustomerForm.address.trim() || '',
-      createdAt: new Date().toISOString()
-    });
-
-    const ob = parseFloat(newCustomerForm.openingBalance);
-    if (!isNaN(ob) && ob > 0) {
-      await currentDB.customerLedger.add({
-        customerId,
-        type: 'charge',
-        amount: ob,
-        description: 'Opening balance',
-        date: new Date().toISOString()
+    try {
+      const res = await fetch('/api/customers', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: newCustomerForm.name.trim(),
+          phone: newCustomerForm.phone.trim() || '',
+          email: newCustomerForm.email.trim() || '',
+          address: newCustomerForm.address.trim() || '',
+          openingBalance: parseFloat(newCustomerForm.openingBalance) || 0
+        })
       });
+      if (res.ok) {
+        const newCustomer = await res.json();
+        setSelectedCustomer(newCustomer);
+        setShowAddCustomer(false);
+        setNewCustomerForm({ name: '', phone: '', email: '', address: '', openingBalance: '' });
+        setCustomerSearch('');
+      }
+    } catch (e) {
+      console.error(e);
     }
-
-    const newCust = { id: customerId, name: newCustomerForm.name.trim(), phone: newCustomerForm.phone.trim() };
-    setSelectedCustomer(newCust);
-    setShowAddCustomer(false);
-    setNewCustomerForm({ name: '', phone: '', email: '', address: '', openingBalance: '' });
-    setCustomerSearch('');
   };
 
   const handleConfirm = () => {

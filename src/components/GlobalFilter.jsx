@@ -15,6 +15,7 @@ export default function GlobalFilter({
   variant = 'chips',
   placeholder = 'Select option...',
   className = '',
+  icon: Icon,
 }) {
   const normalizedOptions = options.map((opt) =>
     typeof opt === 'string' ? { label: opt, value: opt } : opt
@@ -45,10 +46,13 @@ export default function GlobalFilter({
         <button
           type="button"
           onClick={() => setIsOpen(!isOpen)}
-          className={`flex items-center justify-between gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 outline-none transition-colors hover:bg-slate-50 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 ${className}`}
+          className={`flex items-center justify-between gap-2 rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-xs sm:text-sm font-medium text-slate-700 outline-none transition-colors hover:bg-slate-50 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 h-[42px] shadow-2xs ${className}`}
         >
-          <span className="truncate">{selectedOption ? selectedOption.label : placeholder}</span>
-          <svg className={`h-4 w-4 text-slate-400 transition-transform ${isOpen ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <div className="flex items-center gap-2 truncate">
+            {Icon && <Icon className="h-4 w-4 text-slate-500 shrink-0" />}
+            <span className="truncate">{selectedOption ? selectedOption.label : placeholder}</span>
+          </div>
+          <svg className={`h-3.5 w-3.5 text-slate-400 transition-transform shrink-0 ${isOpen ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
           </svg>
         </button>

@@ -40,12 +40,12 @@ const DEFAULT_CATEGORIES = ['Biscuits', 'Chocolates', 'Beverages', 'Snacks', 'Da
  * SAFE TO CALL: Multiple times, called on every page load
  * NO SIDE EFFECTS: Only reads data
  * 
- * @param {Database} db - Dexie database instance
+ * @param {Database} db - Database connection instance
  * @returns {Promise<string[]>} Array of category names sorted alphabetically
  */
 export async function getCategories(db) {
   try {
-    const allCategories = await db.categories.toArray();
+    const res = await fetch("/api/categories"); const d = await res.json(); const allCategories = d.data || [];
     const names = allCategories.map(c => c.name);
     return names.length > 0 ? names.sort() : DEFAULT_CATEGORIES;
   } catch (error) {
@@ -62,7 +62,7 @@ export async function getCategories(db) {
  * - Prevents duplicates (case-insensitive)
  * - User sees immediate feedback on error
  * 
- * @param {Database} db - Dexie database instance
+ * @param {Database} db - Database connection instance
  * @param {string} categoryName - Name of category to add (e.g., "Healthcare", "Electronics")
  * @returns {Promise<number>} ID of newly added category
  * @throws {Error} With user-friendly message if validation fails
@@ -107,7 +107,7 @@ export async function addCategory(db, categoryName) {
  * WARNING: Existing products will keep their category name,
  * they just won't match dropdown anymore. Consider warning users.
  * 
- * @param {Database} db - Dexie database instance
+ * @param {Database} db - Database connection instance
  * @param {string} categoryName - Name of category to delete
  * @throws {Error} If category not found or deletion fails
  */

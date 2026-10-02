@@ -3,6 +3,8 @@ const path = require('path');
 const fs = require('fs');
 const { machineIdSync } = require('node-machine-id');
 const crypto = require('crypto');
+const express = require('express');
+const cors = require('cors');
 
 const PUBLIC_KEY = `-----BEGIN PUBLIC KEY-----
 MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAw3gfPMCiBNEK6FgvRH/b
@@ -341,6 +343,58 @@ ipcMain.handle('activate-license', (event, signatureBase64) => {
     return { success: false, message: 'Invalid activation key' };
   }
 });
+
+// Express server for sync
+let syncServer;
+let syncRequests = new Map();
+
+function startSyncServer() {
+  if (syncServer) return;
+  const syncApp = express();
+  syncApp.use(cors());
+  syncApp.use(express.json({ limit: '50mb' }));
+
+  syncApp.post('/api/sync', (req, res) => {
+    const ops = req.body;
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      return res.status(503).json({ error: 'Main window not available' });
+    }
+
+    const reqId = crypto.randomUUID();
+    syncRequests.set(reqId, res);
+    
+    // Set a timeout to avoid memory leak if renderer doesn't reply
+    setTimeout(() => {
+      if (syncRequests.has(reqId)) {
+        syncRequests.get(reqId).status(504).json({ error: 'Timeout waiting for renderer reply' });
+        syncRequests.delete(reqId);
+      }
+    }, 15000);
+
+    mainWindow.webContents.send('sync-receive', { reqId, ops });
+  });
+
+  syncServer = syncApp.listen(3001, () => {
+    console.log('Sync server listening on port 3001');
+  }).on('error', (err) => {
+    console.error('Failed to start sync server', err);
+  });
+}
+
+ipcMain.on('sync-reply', (event, { reqId, ops }) => {
+  const res = syncRequests.get(reqId);
+  if (res) {
+    res.json(ops || []);
+    syncRequests.delete(reqId);
+  }
+});
+
+ipcMain.on('start-sync-server', () => {
+  startSyncServer();
+});
+
+// Start it by default on port 3001 if available
+startSyncServer();
 
 app.whenReady().then(createWindow);
 

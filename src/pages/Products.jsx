@@ -1,21 +1,25 @@
+import { api } from '@/lib/api';
 import { useEffect, useMemo, useState, useRef, forwardRef, useImperativeHandle, memo, useCallback } from 'react';
-import { Plus, Edit3, Trash2, Search, X } from 'lucide-react';
+import { Plus, Edit3, Trash2, Search, X, Box, Package, CheckCircle, AlertTriangle, Tag, LayoutGrid, Layers, Calendar } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import Barcode from 'react-barcode';
 import PageHeader from '@/components/PageHeader';
+import StatsCard from '@/components/StatsCard';
+import PaginationFooter from '@/components/PaginationFooter';
 import ImageUpload from '@/components/ImageUpload';
 import ConfirmDialog from '@/components/ConfirmDialog';
 import BulkDeleteBar from '@/components/BulkDeleteBar';
-import { initDB, getDB } from '@/lib/db';
+
 import { DEFAULT_IMAGE, formatCurrency, forceRepaintAfterRender, removeLeadingZeros } from '@/lib/utils';
 import { useSettings } from '@/hooks/useSettings';
 import { useBusiness } from '@/contexts/BusinessContext';
-import { useDexieOffsetPagination, clearPaginationCache } from '@/hooks/useDexiePagination';
-import { useLiveQuery } from 'dexie-react-hooks';
+import { useApiPagination, clearPaginationCache } from '@/hooks/useApiPagination';
+
 import { useDebounce } from '@/hooks/useDebounce';
 import GlobalTable from '@/components/GlobalTable';
 import GlobalButton from '@/components/GlobalButton';
 import GlobalSearch from '@/components/GlobalSearch';
+import PrintWrapper from '@/components/PrintWrapper';
 import GlobalFilter from '@/components/GlobalFilter';
 import ColumnVisibilityDropdown from '@/components/ColumnVisibilityDropdown';
 
@@ -49,7 +53,7 @@ const CustomSelect = ({ value, onChange, options, placeholder = "Select option..
         <span className={`truncate text-left ${value ? 'text-slate-900' : 'text-slate-500'}`}>
           {(() => {
             if (!value) return placeholder;
-            const selectedOpt = options.find(o => (typeof o === 'object' ? o.value === value : o === value));
+            const selectedOpt = options.find(o => (typeof o === 'object' ? String(o.value) === String(value) : String(o) === String(value)));
             return selectedOpt ? (typeof selectedOpt === 'object' ? selectedOpt.label : selectedOpt) : value;
           })()}
         </span>
@@ -122,7 +126,7 @@ const ProductFormModal = memo(forwardRef(({ currency, categories = [], onSuccess
   useImperativeHandle(ref, () => ({
     openNew: () => {
       setSelectedProduct(null);
-      setTempPreviewBarcode(`SHOP-TEMP-${Date.now()}`);
+      setTempPreviewBarcode(`${Date.now()}`);
       setForm({
         name: '', barcode: '', price: '', wholesalePrice: '', costPrice: 0, unit: 'pcs', category: categories.find(c => !c.parentId)?.id || null,
         expiryDate: '', image: DEFAULT_IMAGE, description: '', createdAt: new Date().toISOString(),
@@ -131,7 +135,7 @@ const ProductFormModal = memo(forwardRef(({ currency, categories = [], onSuccess
     },
     openEdit: (product) => {
       setSelectedProduct(product);
-      setTempPreviewBarcode(product.barcode?.trim() || `SHOP-TEMP-${Date.now()}`);
+      setTempPreviewBarcode(product.barcode?.trim() || `${Date.now()}`);
       setForm({ ...product, category: product.category || (categories.find(c => !c.parentId)?.id || null), expiryDate: product.expiryDate || '' });
       setOpenForm(true);
     },
@@ -142,7 +146,6 @@ const ProductFormModal = memo(forwardRef(({ currency, categories = [], onSuccess
     if (event && event.preventDefault) event.preventDefault();
     if (!form.name) return;
 
-    const currentDB = getDB();
     const barcodeValue = form.barcode?.trim() ?? '';
     const shouldGenerateBarcode = !barcodeValue && !selectedProduct?.barcode;
     let finalBarcode = barcodeValue || selectedProduct?.barcode || '';
@@ -156,29 +159,28 @@ const ProductFormModal = memo(forwardRef(({ currency, categories = [], onSuccess
     };
 
     if (selectedProduct?.id) {
-      await currentDB.products.update(selectedProduct.id, productData);
+      await api.updateProduct(selectedProduct.id, productData);
       if (shouldGenerateBarcode) {
-        finalBarcode = `SHOP-${selectedProduct.id}-${Date.now()}`;
-        await currentDB.products.update(selectedProduct.id, { barcode: finalBarcode });
+        finalBarcode = `${Date.now()}`;
+        await api.updateProduct(selectedProduct.id, { barcode: finalBarcode });
       }
       onSuccess('update', { ...productData, barcode: finalBarcode, id: selectedProduct.id });
     } else {
-      const id = await currentDB.products.add({ ...productData, createdAt: new Date().toISOString() });
-      let savedBarcode = finalBarcode;
+      const createdProduct = await api.createProduct(productData);
+        const id = createdProduct.id;
+        let savedBarcode = finalBarcode;
       if (shouldGenerateBarcode) {
-        savedBarcode = `SHOP-${id}-${Date.now()}`;
-        await currentDB.products.update(id, { barcode: savedBarcode });
+        savedBarcode = `${Date.now()}`;
+        await api.updateProduct(id, { barcode: savedBarcode });
       }
-      await currentDB.inventory.add({
-        productId: id, quantity: 0, lowStockThreshold: 10, lastUpdated: new Date().toISOString()
-      });
+      
       onSuccess('add', { ...productData, id, barcode: savedBarcode });
     }
     
     if (addAnother) {
       // Reset form but keep category
       setSelectedProduct(null);
-      setTempPreviewBarcode(`SHOP-TEMP-${Date.now()}`);
+      setTempPreviewBarcode(`${Date.now()}`);
       setForm(prev => ({
         name: '', barcode: '', price: '', wholesalePrice: '', costPrice: 0, unit: 'pcs', category: prev.category,
         expiryDate: '', image: DEFAULT_IMAGE, description: '', createdAt: new Date().toISOString(),
@@ -743,20 +745,25 @@ const ProductFormModal = memo(forwardRef(({ currency, categories = [], onSuccess
                     e.preventDefault();
                     const val = newCategoryName.trim();
                     if (val) {
-                      const db = getDB();
-                      const existing = await db.categories.where('name').equals(val).first();
+                      const res = await fetch('/api/categories?search=' + encodeURIComponent(val));
+                      const data = await res.json();
+                      const items = data.data || data || [];
+                      const existing = items.find(c => c.name === val);
                       let newId;
                       if (!existing) {
-                        newId = await db.categories.add({
-                          name: val,
-                          parentId: addingCategoryState.parentId || null,
-                          status: 'Active',
-                          createdAt: new Date().toISOString(),
-                          updatedAt: new Date().toISOString()
+                        const postRes = await fetch('/api/categories', {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({
+                            name: val,
+                            parentId: addingCategoryState.parentId || null,
+                            status: 'Active'
+                          })
                         });
-                      } else {
-                        newId = existing.id;
-                      }
+                        const created = await postRes.json();
+                        newId = created.id;
+                          categories.push({ id: newId, name: val, parentId: addingCategoryState.parentId });
+                        }
                       setForm(prev => ({ ...prev, category: newId }));
                     }
                     setAddingCategoryState(null);
@@ -776,21 +783,26 @@ const ProductFormModal = memo(forwardRef(({ currency, categories = [], onSuccess
                 onClick={async () => {
                   const val = newCategoryName.trim();
                   if (val) {
-                    const db = getDB();
-                    const existing = await db.categories.where('name').equals(val).first();
-                    let newId;
-                    if (!existing) {
-                      newId = await db.categories.add({
-                        name: val,
-                        parentId: addingCategoryState.parentId || null,
-                        status: 'Active',
-                        createdAt: new Date().toISOString(),
-                        updatedAt: new Date().toISOString()
-                      });
-                    } else {
-                      newId = existing.id;
-                    }
-                    setForm(prev => ({ ...prev, category: newId }));
+                    const res = await fetch('/api/categories?search=' + encodeURIComponent(val));
+                      const data = await res.json();
+                      const items = data.data || data || [];
+                      const existing = items.find(c => c.name === val);
+                      let newId;
+                      if (!existing) {
+                        const postRes = await fetch('/api/categories', {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({
+                            name: val,
+                            parentId: addingCategoryState.parentId || null,
+                            status: 'Active'
+                          })
+                        });
+                        const created = await postRes.json();
+                        newId = created.id;
+                          categories.push({ id: newId, name: val, parentId: addingCategoryState.parentId });
+                        }
+                      setForm(prev => ({ ...prev, category: newId }));
                   }
                   setAddingCategoryState(null);
                   setNewCategoryName('');
@@ -816,7 +828,10 @@ export default function Products() {
   const [inventory, setInventory] = useState(new Map());
   const [stats, setStats] = useState({ total: 0, healthy: 0, low: 0, nearExpiry: 0, healthyPercent: '0.0' });
 
-  const categoriesList = useLiveQuery(() => getDB().categories.toArray(), []) || [];
+  const [categoriesList, setCategoriesList] = useState([]);
+  useEffect(() => {
+    fetch('/api/categories').then(r => r.json()).then(d => setCategoriesList(d.data || d || []));
+  }, []);
   
   const categoryPaths = useMemo(() => {
     const catMap = new Map();
@@ -873,15 +888,11 @@ export default function Products() {
 
   useEffect(() => {
     const load = async () => {
-      await initDB();
-      const currentDB = getDB();
-      
-
-
-      const inventoryData = await currentDB.inventory.toArray();
-      setInventory(inventoryData);
-    };
-    load();
+        const res = await fetch('/api/inventory');
+        const data = await res.json();
+        setInventory(data.data || data || []);
+      };
+      load();
   }, []);
 
   const inventoryMap = useMemo(() => {
@@ -893,7 +904,7 @@ export default function Products() {
   }, [inventory]);
 
   const queryBuilder = useCallback((db) => {
-    let query = db.products.orderBy('id').reverse();
+    
     
     query = query.filter(p => {
       if (debouncedSearch) {
@@ -944,77 +955,69 @@ export default function Products() {
     return query;
   }, [debouncedSearch, categoryFilter, stockFilter, expiryFilter, inventoryMap, categoriesList]);
 
-  const [limit, setLimit] = useState(20);
-  const [currentPage, setCurrentPage] = useState(1);
+  const [limit, setLimit] = useState(25);
+  
   
   // Reset page to 1 when filters or search change
-  useEffect(() => {
-    setCurrentPage(1);
-  }, [debouncedSearch, categoryFilter, stockFilter, expiryFilter, limit]);
+  
 
-  const { data: visibleData, totalCount, isLoading, refresh } = useDexieOffsetPagination(
-    queryBuilder, 
-    [debouncedSearch, categoryFilter, stockFilter, expiryFilter, inventory, categoriesList], 
-    currentPage, 
-    limit
-  );
+  const { data: visibleData, totalItems: totalCount, loading: isLoading, refresh, setPageIndex, pageIndex, totalPages } = useApiPagination({
+  endpoint: `/api/products?category=${categoryFilter !== 'All' ? categoryFilter : ''}&stock=${stockFilter}&expiry=${expiryFilter}`,
+  pageSize: limit,
+  search: debouncedSearch,
+  category: categoryFilter,
+  mode: 'infinite'
+});
 
   const openNewProduct = () => modalRef.current?.openNew();
 
   useEffect(() => {
     let isMounted = true;
     const fetchStats = async () => {
-      const currentDB = getDB();
-      const products = await currentDB.products.toArray();
-      const inventoryData = await currentDB.inventory.toArray();
-      const invMap = new Map(inventoryData.map(i => [i.productId, i]));
-
-      let healthy = 0;
-      let low = 0;
-      let nearExpiry = 0;
-      const today = new Date();
-      const sixtyDaysFromNow = new Date();
-      sixtyDaysFromNow.setDate(today.getDate() + 60);
-
-      products.forEach(p => {
-        const inv = invMap.get(p.id);
-        const qty = inv ? inv.quantity : 0;
-        const lowLimit = p.lowStockWarning || 10;
+      try {
+        const invRes = await api.getInventory();
+        const inventoryData = invRes.data || [];
         
-        if (qty > lowLimit) {
-          healthy++;
-        } else {
-          low++;
-        }
+        let healthy = 0;
+        let low = 0;
+        let nearExpiry = 0;
+        const today = new Date();
+        const warningDays = Number(settings?.expiryWarningDays) || 30;
 
-        if (p.expiryDate) {
-          const exp = new Date(p.expiryDate);
-          if (exp <= sixtyDaysFromNow && exp >= today) {
-            nearExpiry++;
+        for (const item of inventoryData) {
+          const qty = Number(item.quantity || 0);
+          const minQty = Number(item.minStockLevel || 10);
+          if (qty > minQty) healthy++;
+          else low++;
+
+          if (item.expiryDate) {
+            const exp = new Date(item.expiryDate);
+            const diffDays = Math.ceil((exp - today) / (1000 * 60 * 60 * 24));
+            if (diffDays <= warningDays) nearExpiry++;
           }
         }
-      });
+        
+        const total = totalCount;
+        const healthyPercent = total > 0 ? ((healthy / total) * 100).toFixed(1) : '0.0';
 
-      const total = products.length;
-      const healthyPercent = total > 0 ? ((healthy / total) * 100).toFixed(1) : '0.0';
-
-      if (isMounted) {
-        setStats({ total, healthy, low, nearExpiry, healthyPercent });
+        if (isMounted) {
+          setStats({ total, healthy, low, nearExpiry, healthyPercent });
+        }
+      } catch (error) {
+        console.error("Error fetching stats", error);
       }
     };
     fetchStats();
     return () => { isMounted = false; };
-  }, [totalCount, inventory]);
+  }, [totalCount, settings?.expiryWarningDays]);
   const openEditProduct = (product) => modalRef.current?.openEdit(product);
 
   const removeProduct = async () => {
     if (!selectedProduct?.id) return;
     const idToDelete = selectedProduct.id;
-    const currentDB = getDB();
-
     try {
-      await currentDB.products.delete(idToDelete);
-      await currentDB.inventory.where('productId').equals(idToDelete).delete();
+      await api.deleteProduct(idToDelete);
+      
     } catch (error) {
       console.error('Error deleting product:', error);
       return;
@@ -1099,6 +1102,7 @@ export default function Products() {
                 levels.push(
                   <GlobalFilter
                     key={`cat-filter-level-${levelIndex}`}
+                    icon={LayoutGrid}
                     options={[
                       {label: levelIndex === 0 ? 'All Categories' : 'All Subcats', value: 'All'},
                       ...opts
@@ -1122,13 +1126,15 @@ export default function Products() {
               return levels;
             })()}
             <GlobalFilter
-              options={[{label: 'Stock: All Units', value: 'all'}, {label: 'Low Stock', value: 'low'}]}
+              icon={Layers}
+              options={[{label: 'Stock: All Levels', value: 'all'}, {label: 'Low Stock', value: 'low'}, {label: 'Out of Stock', value: 'out'}]}
               value={stockFilter}
               onChange={setStockFilter}
               variant="select"
             />
             <GlobalFilter
-              options={[{label: 'Expiry: Any date', value: 'all'}, {label: 'Near Expiry', value: 'near'}]}
+              icon={Calendar}
+              options={[{label: 'Expiry: Any date', value: 'all'}, {label: 'Near Expiry', value: 'near'}, {label: 'Expired', value: 'expired'}]}
               value={expiryFilter}
               onChange={setExpiryFilter}
               variant="select"
@@ -1139,15 +1145,6 @@ export default function Products() {
               toggleColumn={toggleColumn}
             />
           </div>
-        </div>
-        
-        <div className="flex items-center justify-between text-xs font-medium text-slate-500 px-1">
-          <div className="flex items-center gap-2">
-            <span className="flex h-2 w-2 rounded-full bg-blue-500"></span>
-            <span className="font-bold text-slate-900">Displaying {totalCount} active medicines</span>
-            <span>· All prices shown in {currency} inclusive of tax</span>
-          </div>
-          <div>Select all {totalCount} items</div>
         </div>
       </div>
     );
@@ -1160,47 +1157,80 @@ export default function Products() {
           type="checkbox"
           checked={selectAll}
           onChange={toggleSelectAll}
-          className="w-4 h-4 rounded cursor-pointer"
+          className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
         />
       ),
-      className: "w-10",
+      className: "w-8 text-center",
     },
-    { header: "Product" }, // Always visible
-    ...(visibleCols.includes('Category') ? [{ header: "Category" }] : []),
-    ...(visibleCols.includes('Subcategory') ? [{ header: "Subcategory" }] : []),
-    ...(visibleCols.includes('Sub-Subcategory') ? [{ header: "Sub-Subcategory" }] : []),
-    ...(visibleCols.includes('Barcode') ? [{ header: "Barcode" }] : []),
-    ...(visibleCols.includes('Sale Price') ? [{ header: "Sale Price" }] : []),
-    ...(visibleCols.includes('Wholesale Price') ? [{ header: "Wholesale Price" }] : []),
-    ...(visibleCols.includes('Purchase Price') ? [{ header: "Purchase Price" }] : []),
-    ...(visibleCols.includes('Unit') ? [{ header: "Unit" }] : []),
-    ...(visibleCols.includes('Expiry') ? [{ header: "Expiry" }] : []),
-    ...(visibleCols.includes('Stock') ? [{ header: "Stock" }] : []),
-    { header: "Actions" }, // Always visible
+    { header: "#", className: "w-8 text-slate-400 text-center" },
+    { 
+      header: (
+        <span className="inline-flex items-center gap-1 font-semibold text-slate-500 text-[11px]">
+          PRODUCT <span className="text-slate-300 text-[10px]">⇅</span>
+        </span>
+      ) 
+    },
+    ...(visibleCols.includes('Category') ? [{ 
+      header: <span className="inline-flex items-center gap-1 font-semibold text-slate-500 text-[11px]">CATEGORY <span className="text-slate-300 text-[10px]">⇅</span></span> 
+    }] : []),
+    ...(visibleCols.includes('Subcategory') ? [{ 
+      header: <span className="inline-flex items-center gap-1 font-semibold text-slate-500 text-[11px]">SUBCATEGORY <span className="text-slate-300 text-[10px]">⇅</span></span> 
+    }] : []),
+    ...(visibleCols.includes('Sub-Subcategory') ? [{ 
+      header: <span className="inline-flex items-center gap-1 font-semibold text-slate-500 text-[11px]">SUB-SUBCATEGORY <span className="text-slate-300 text-[10px]">⇅</span></span> 
+    }] : []),
+    ...(visibleCols.includes('Barcode') ? [{ 
+      header: <span className="inline-flex items-center gap-1 font-semibold text-slate-500 text-[11px]">BARCODE <span className="text-slate-300 text-[10px]">⇅</span></span> 
+    }] : []),
+    ...(visibleCols.includes('Sale Price') ? [{ 
+      header: <span className="inline-flex items-center gap-1 font-semibold text-slate-500 text-[11px]">SALE PRICE <span className="text-slate-300 text-[10px]">⇅</span></span> 
+    }] : []),
+    ...(visibleCols.includes('Wholesale Price') ? [{ 
+      header: <span className="inline-flex items-center gap-1 font-semibold text-slate-500 text-[11px]">WHOLESALE PRICE <span className="text-slate-300 text-[10px]">⇅</span></span> 
+    }] : []),
+    ...(visibleCols.includes('Purchase Price') ? [{ 
+      header: <span className="inline-flex items-center gap-1 font-semibold text-slate-500 text-[11px]">PURCHASE PRICE <span className="text-slate-300 text-[10px]">⇅</span></span> 
+    }] : []),
+    ...(visibleCols.includes('Unit') ? [{ 
+      header: <span className="inline-flex items-center gap-1 font-semibold text-slate-500 text-[11px]">UNIT <span className="text-slate-300 text-[10px]">⇅</span></span> 
+    }] : []),
+    ...(visibleCols.includes('Expiry') ? [{ 
+      header: <span className="inline-flex items-center gap-1 font-semibold text-slate-500 text-[11px]">EXPIRY <span className="text-slate-300 text-[10px]">⇅</span></span> 
+    }] : []),
+    ...(visibleCols.includes('Stock') ? [{ 
+      header: <span className="inline-flex items-center gap-1 font-semibold text-slate-500 text-[11px]">STOCK <span className="text-slate-300 text-[10px]">⇅</span></span> 
+    }] : []),
+    { header: "ACTIONS", className: "text-right" },
   ];
   const renderProductRow = (product, virtualIndex, measureRef) => {
-    const rowBg = virtualIndex % 2 === 0 ? 'bg-white' : 'bg-slate-50/50';
+    const rowBg = virtualIndex % 2 === 0 ? 'bg-white' : 'bg-slate-50/40';
+    const isSelected = selectedIds.includes(product.id);
+    const rowNumber = virtualIndex + 1;
+    const stockQty = productInventory(product.id)?.quantity ?? 0;
+    const lowStockThreshold = product.lowStockThreshold || 10;
+
     return (
     <tr
       key={product.id}
       ref={measureRef}
       data-index={virtualIndex}
-      className={`border-b border-slate-200 transition-colors ${selectedIds.includes(product.id) ? 'bg-red-50 hover:bg-red-50/80' : `hover:bg-slate-100 ${rowBg}`}`}
+      className={`border-b border-slate-100 transition-colors ${isSelected ? 'bg-blue-50/60 hover:bg-blue-50/80' : `hover:bg-slate-50/80 ${rowBg}`}`}
     >
-      <td className="px-4 py-4">
+      <td className="px-4 py-3.5 text-center">
         <input
           type="checkbox"
-          checked={selectedIds.includes(product.id)}
+          checked={isSelected}
           onChange={() => toggleSelect(product.id)}
-          className="w-4 h-4 rounded cursor-pointer"
+          className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
         />
       </td>
-      <td className="px-4 py-4">
+      <td className="px-3 py-3.5 text-xs text-slate-400 font-medium text-center">
+        {rowNumber}
+      </td>
+      <td className="px-4 py-3.5">
         <div className="flex items-center gap-3">
-          <img src={product.image} alt={product.name} className="h-12 w-12 rounded-xl object-cover" />
-          <div>
-            <p className="font-semibold text-slate-900">{product.name}</p>
-          </div>
+          <img src={product.image} alt={product.name} className="h-9 w-9 rounded-lg object-cover border border-slate-100 shrink-0" />
+          <p className="font-semibold text-slate-900 text-sm">{product.name}</p>
         </div>
       </td>
       {(() => {
@@ -1222,19 +1252,19 @@ export default function Products() {
         return (
           <>
             {visibleCols.includes('Category') && (
-              <td className="px-4 py-3 font-medium text-slate-700 text-sm">
-                {chain.length > 0 ? chain[0] : (chain.length === 0 && product.category ? product.category : '-')}
+              <td className="px-4 py-3.5 text-slate-700 text-sm">
+                {chain.length > 0 ? chain[0] : '-'}
               </td>
             )}
             
             {visibleCols.includes('Subcategory') && (
-              <td className="px-4 py-3 text-slate-600 text-sm">
+              <td className="px-4 py-3.5 text-slate-500 text-sm">
                 {chain.length > 1 ? chain[1] : '-'}
               </td>
             )}
             
             {visibleCols.includes('Sub-Subcategory') && (
-              <td className="px-4 py-3 text-slate-500 text-sm">
+              <td className="px-4 py-3.5 text-slate-400 text-sm">
                 {chain.length > 2 ? chain[2] : '-'}
               </td>
             )}
@@ -1242,43 +1272,43 @@ export default function Products() {
         );
       })()}
       {visibleCols.includes('Barcode') && (
-        <td className="px-4 py-4 text-slate-700 font-mono text-xs">{product.barcode || '-'}</td>
+        <td className="px-4 py-3.5 text-slate-600 font-mono text-xs">{product.barcode || '-'}</td>
       )}
       {visibleCols.includes('Sale Price') && (
-        <td className="px-4 py-4 font-semibold text-slate-900">{formatCurrency(product.price, currency)}</td>
+        <td className="px-4 py-3.5 font-bold text-slate-900 text-sm">{formatCurrency(product.price, currency)}</td>
       )}
       {visibleCols.includes('Wholesale Price') && (
-        <td className="px-4 py-4 text-blue-700 font-medium">{product.wholesalePrice ? formatCurrency(product.wholesalePrice, currency) : '-'}</td>
+        <td className="px-4 py-3.5 text-slate-600 text-sm">{product.wholesalePrice ? formatCurrency(product.wholesalePrice, currency) : '-'}</td>
       )}
       {visibleCols.includes('Purchase Price') && (
-        <td className="px-4 py-4 text-slate-600">{formatCurrency(product.costPrice, currency)}</td>
+        <td className="px-4 py-3.5 text-slate-600 text-sm">{formatCurrency(product.costPrice, currency)}</td>
       )}
       {visibleCols.includes('Unit') && (
-        <td className="px-4 py-4 text-slate-600 text-xs">{product.unit}</td>
+        <td className="px-4 py-3.5 text-slate-600 text-xs">{product.unit || 'pcs'}</td>
       )}
       {visibleCols.includes('Expiry') && (
-        <td className="px-4 py-4 text-slate-600 text-xs">
+        <td className="px-4 py-3.5 text-slate-600 text-xs">
           {product.expiryDate ? new Date(product.expiryDate).toLocaleDateString() : '-'}
         </td>
       )}
       {visibleCols.includes('Stock') && (
-        <td className="px-4 py-4">
-          <span className={`inline-flex items-center rounded-full px-2 py-1 text-xs font-semibold ${
-            (productInventory(product.id)?.quantity ?? 0) <= 0
-              ? 'bg-red-100 text-red-700'
-              : (productInventory(product.id)?.quantity ?? 0) <= (product.lowStockThreshold || 10)
-              ? 'bg-amber-100 text-amber-700'
-              : 'bg-emerald-100 text-emerald-700'
+        <td className="px-4 py-3.5">
+          <span className={`inline-flex items-center justify-center min-w-[32px] px-2.5 py-0.5 rounded-full text-xs font-bold ${
+            stockQty <= 0
+              ? 'bg-red-50 text-red-600'
+              : stockQty <= lowStockThreshold
+              ? 'bg-amber-50 text-amber-600'
+              : 'bg-emerald-50 text-emerald-600'
           }`}>
-            {productInventory(product.id)?.quantity ?? 0}
+            {stockQty}
           </span>
         </td>
       )}
-      <td className="px-4 py-4">
-        <div className="flex gap-2">
+      <td className="px-4 py-3.5 text-right">
+        <div className="flex items-center justify-end gap-1.5">
           <button
             onClick={() => openEditProduct(product)}
-            className="rounded-lg p-2 text-blue-600 hover:bg-blue-50 transition-colors"
+            className="rounded-lg p-1.5 text-blue-600 hover:bg-blue-50 transition-colors"
             title="Edit product"
           >
             <Edit3 className="w-4 h-4" />
@@ -1288,7 +1318,7 @@ export default function Products() {
               setSelectedProduct(product);
               setConfirmDelete(true);
             }}
-            className="rounded-lg p-2 text-red-600 hover:bg-red-50 transition-colors"
+            className="rounded-lg p-1.5 text-red-500 hover:bg-red-50 transition-colors"
             title="Delete product"
           >
             <Trash2 className="w-4 h-4" />
@@ -1300,98 +1330,29 @@ export default function Products() {
   };
 
   const memoizedTable = useMemo(() => {
-    const totalPages = Math.max(1, Math.ceil(totalCount / limit));
-    
-    // Generate page numbers
-    const getPageNumbers = () => {
-      const pages = [];
-      if (totalPages <= 5) {
-        for (let i = 1; i <= totalPages; i++) pages.push(i);
-      } else {
-        if (currentPage <= 3) {
-          pages.push(1, 2, 3, 4, '...', totalPages);
-        } else if (currentPage >= totalPages - 2) {
-          pages.push(1, '...', totalPages - 3, totalPages - 2, totalPages - 1, totalPages);
-        } else {
-          pages.push(1, '...', currentPage - 1, currentPage, currentPage + 1, '...', totalPages);
-        }
-      }
-      return pages;
-    };
-
-    const startItem = totalCount === 0 ? 0 : (currentPage - 1) * limit + 1;
-    const endItem = Math.min(currentPage * limit, totalCount);
-
     return (
-      <div className="mt-2">
-        <GlobalTable
-          data={visibleData}
-          columns={tableColumns}
+      <div className="mt-3">
+        <GlobalTable 
+          data={visibleData} 
+          columns={tableColumns} 
           renderRow={renderProductRow}
+          loading={isLoading}
+          onLoadMore={() => setPageIndex(p => p + 1)}
+          hasMore={visibleData.length < totalCount}
           emptyState={
             <div className="flex flex-col items-center justify-center py-12 text-slate-500">
               <svg className="w-12 h-12 text-slate-300 mb-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4" />
               </svg>
-              <p className="text-sm">No products found</p>
+              <p className="text-sm font-semibold text-slate-700">No products found</p>
+              <p className="text-xs text-slate-400 mt-1">Try modifying your search or filter criteria</p>
             </div>
           }
         />
-        
-        <div className="mt-4 flex flex-col sm:flex-row items-center justify-between gap-4 pt-4 border-t border-slate-200">
-          
-          {/* Left side: text and rows dropdown */}
-          <div className="flex items-center gap-4 text-xs text-slate-500">
-            <div>
-              Showing <span className="font-bold text-slate-700">{startItem}</span> to <span className="font-bold text-slate-700">{endItem}</span> of <span className="font-bold text-slate-700">{totalCount}</span> items
-            </div>
-            <div className="h-3 w-px bg-slate-200"></div>
-            <div className="flex items-center gap-2">
-              <span>Rows:</span>
-              <RowsDropdown limit={limit} setLimit={setLimit} />
-            </div>
-            {isLoading && <span className="ml-2 animate-pulse text-emerald-500">Loading...</span>}
-          </div>
-
-          {/* Right side: Pagination box */}
-          <div className="flex items-center rounded-lg border border-slate-200 bg-white p-1 shadow-sm text-sm font-medium text-slate-600">
-            <button 
-              onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
-              disabled={currentPage === 1}
-              className={`flex h-7 w-7 items-center justify-center rounded ${currentPage === 1 ? 'text-slate-300 cursor-not-allowed' : 'text-slate-600 hover:bg-slate-50 hover:text-blue-600'}`}
-            >
-              <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" /></svg>
-            </button>
-            
-            {getPageNumbers().map((pageNum, idx) => (
-              <button
-                key={idx}
-                disabled={pageNum === '...'}
-                onClick={() => typeof pageNum === 'number' && setCurrentPage(pageNum)}
-                className={`flex h-7 w-7 items-center justify-center rounded ${
-                  pageNum === '...' 
-                    ? 'text-slate-400 cursor-default' 
-                    : pageNum === currentPage 
-                      ? 'bg-emerald-50 text-emerald-600' 
-                      : 'hover:bg-slate-50'
-                }`}
-              >
-                {pageNum}
-              </button>
-            ))}
-
-            <button 
-              onClick={() => setCurrentPage(prev => Math.min(totalPages, prev + 1))}
-              disabled={currentPage === totalPages}
-              className={`flex h-7 w-7 items-center justify-center rounded ${currentPage === totalPages ? 'text-slate-300 cursor-not-allowed' : 'text-slate-600 hover:bg-slate-50 hover:text-blue-600'}`}
-            >
-              <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
-            </button>
-          </div>
-        </div>
       </div>
     );
-  }, [visibleData, selectedIds, selectAll, debouncedSearch, currency, inventory, totalCount, currentPage, limit, isLoading, visibleCols]);
+  }, [visibleData, selectedIds, selectAll, debouncedSearch, currency, inventory, totalCount, limit, isLoading, visibleCols]);
+
 
 
   // Step 1: user clicks delete bar → show React confirm dialog (NOT window.confirm)
@@ -1407,9 +1368,8 @@ export default function Products() {
     setConfirmBulkDelete(false);
     setIsDeleting(true);
     try {
-      const currentDB = getDB();
-      await currentDB.inventory.where('productId').anyOf(selectedIds).delete();
-      await currentDB.products.bulkDelete(selectedIds);
+      
+      await api.deleteProductsBulk(selectedRows);
       clearPaginationCache('products');
       clearPaginationCache('inventory');
       refresh();
@@ -1490,57 +1450,67 @@ export default function Products() {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 pb-2">
-        <h1 className="text-2xl sm:text-3xl font-bold text-slate-900 tracking-tight">Products Management</h1>
-        <div className="flex items-center gap-3 shrink-0 mt-2 md:mt-0">
-          <GlobalButton
-            variant="outline"
-            icon={() => <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z" /></svg>}
-            onClick={() => setShowPrintLabels(true)}
-          >
-            Print Label Codes
-          </GlobalButton>
-          <GlobalButton
-            icon={Plus}
-            onClick={openNewProduct}
-          >
-            Add Product
-          </GlobalButton>
-        </div>
-      </div>
+      <PageHeader 
+        icon={Box}
+        title="Products Management"
+        description="Manage your products, categories, stock and pricing all in one place."
+        action={
+          <div className="flex items-center gap-2.5">
+            <GlobalButton
+              variant="outline"
+              icon={() => <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z" /></svg>}
+              onClick={() => setShowPrintLabels(true)}
+            >
+              Print Label Codes
+            </GlobalButton>
+            <button
+              type="button"
+              onClick={openNewProduct}
+              className="bg-blue-600 hover:bg-blue-700 text-white font-medium text-sm px-4 py-2.5 rounded-xl shadow-xs flex items-center gap-2 transition-all"
+            >
+              <Plus className="w-4 h-4 stroke-[2.5]" />
+              Add Product
+            </button>
+          </div>
+        }
+      />
 
       <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <div className="rounded-xl border border-slate-200 border-l-4 border-l-blue-500 bg-white p-5 shadow-sm flex flex-col justify-between hover:-translate-y-0.5 hover:shadow-card-hover transition-all duration-200">
-          <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Total Products</p>
-          <div className="mt-3">
-            <p className="text-2xl font-bold text-slate-900">{stats.total.toLocaleString()}</p>
-            <p className="text-[11px] font-medium text-slate-500 mt-1">Active inventory items</p>
-          </div>
-        </div>
-        <div className="rounded-xl border border-slate-200 border-l-4 border-l-blue-500 bg-white p-5 shadow-sm flex flex-col justify-between hover:-translate-y-0.5 hover:shadow-card-hover transition-all duration-200">
-          <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Healthy Stock</p>
-          <div className="mt-3">
-            <p className="text-2xl font-bold text-slate-900">{stats.healthy.toLocaleString()}</p>
-            <p className="text-[11px] font-medium text-slate-500 mt-1">{stats.healthyPercent}% of total stock</p>
-          </div>
-        </div>
-        <div className="rounded-xl border border-slate-200 border-l-4 border-l-blue-500 bg-white p-5 shadow-sm flex flex-col justify-between hover:-translate-y-0.5 hover:shadow-card-hover transition-all duration-200">
-          <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Low or Critical Stock</p>
-          <div className="mt-3">
-            <p className="text-2xl font-bold text-slate-900">{stats.low.toLocaleString()}</p>
-            <p className="text-[11px] font-medium text-slate-500 mt-1">Action required soon</p>
-          </div>
-        </div>
-        <div className="rounded-xl border border-slate-200 border-l-4 border-l-blue-500 bg-white p-5 shadow-sm flex flex-col justify-between hover:-translate-y-0.5 hover:shadow-card-hover transition-all duration-200">
-          <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Near Expiry (&lt;60d)</p>
-          <div className="mt-3">
-            <p className="text-2xl font-bold text-slate-900">{stats.nearExpiry.toLocaleString()}</p>
-            <p className="text-[11px] font-medium text-slate-500 mt-1">Check batches</p>
-          </div>
-        </div>
+        <StatsCard 
+          title="Total Products" 
+          value={stats.total.toLocaleString()} 
+          description="Active inventory items" 
+          color="blue" 
+          icon={Package} 
+          arrow="forward" 
+        />
+        <StatsCard 
+          title="Healthy Stock" 
+          value={stats.healthy.toLocaleString()} 
+          description="At or above reorder level" 
+          color="emerald" 
+          icon={CheckCircle} 
+          arrow="forward" 
+        />
+        <StatsCard 
+          title="Low or Critical Stock" 
+          value={stats.low.toLocaleString()} 
+          description="Action required soon" 
+          color="amber" 
+          icon={AlertTriangle} 
+          arrow="forward" 
+        />
+        <StatsCard 
+          title="Near Expiry (1-80d)" 
+          value={stats.nearExpiry.toLocaleString()} 
+          description="Check for expiry" 
+          color="purple" 
+          icon={Tag} 
+          arrow="forward" 
+        />
       </div>
 
-      <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+      <div className="rounded-2xl border border-slate-200/80 bg-white p-5 shadow-xs">
         {tableContent}
         {memoizedTable}
       </div>
@@ -1550,9 +1520,9 @@ export default function Products() {
         currency={currency} 
         categories={categoriesList}
         onSuccess={async (mode, productData) => {
-          const currentDB = getDB();
-          const inventoryData = await currentDB.inventory.toArray();
-          setInventory(inventoryData);
+          const res = await fetch('/api/inventory');
+            const data = await res.json();
+            setInventory(data.data || data || []);
           
           clearPaginationCache('products'); // Clear products cache so the new product is fetched
           clearPaginationCache('inventory'); // Clear inventory cache so it reloads fresh

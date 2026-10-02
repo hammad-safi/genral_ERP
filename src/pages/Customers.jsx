@@ -1,14 +1,16 @@
+import { api } from '@/lib/api';
 import { useEffect, useMemo, useState, useCallback } from 'react';
-import { Plus, Search, BookOpen, Edit, Trash2 } from 'lucide-react';
+import { useApiPagination } from '@/hooks/useApiPagination';
+import { Plus, Search, BookOpen, Edit, Trash2, Users, Clock, CheckCircle } from 'lucide-react';
 import BulkDeleteBar from '@/components/BulkDeleteBar';
 import { useNavigate } from 'react-router-dom';
 import PageHeader from '@/components/PageHeader';
 import StatsCard from '@/components/StatsCard';
 import ConfirmDialog from '@/components/ConfirmDialog';
-import { initDB, getDB } from '@/lib/db';
+
 import { formatCurrency, forceRepaintAfterRender, removeLeadingZeros } from '@/lib/utils';
 import { useSettings } from '@/hooks/useSettings';
-import { useDexieOffsetPagination, clearPaginationCache } from '@/hooks/useDexiePagination';
+
 import { useDebounce } from '@/hooks/useDebounce';
 import GlobalTable from '@/components/GlobalTable';
 import ColumnVisibilityDropdown from '@/components/ColumnVisibilityDropdown';
@@ -36,31 +38,23 @@ export default function Customers() {
 
   const [stats, setStats] = useState({ totalCustomers: 0, totalOwed: 0, totalPaid: 0 });
 
-  useEffect(() => {
-    const calcStats = async () => {
-      const currentDB = getDB();
-      let totalP = 0;
-      const balances = {};
-      
-      await currentDB.customerLedger.each(e => {
-        if (!balances[e.customerId]) balances[e.customerId] = 0;
-        if (e.type === 'charge' || e.type === 'purchase') balances[e.customerId] += e.amount;
-        if (e.type === 'payment') {
-          balances[e.customerId] -= e.amount;
-          totalP += e.amount;
-        }
+  const calcStats = useCallback(async () => {
+    try {
+      const res = await api.getCustomers();
+      const summary = res.summary || {};
+      setStats({ 
+        totalCustomers: summary.totalCount || 0, 
+        totalOwed: summary.totalOwed || 0, 
+        totalPaid: summary.totalPaid || 0 
       });
-      
-      let tOwed = 0;
-      for (const bal of Object.values(balances)) {
-        if (bal > 0) tOwed += bal;
-      }
-      
-      const cCount = await currentDB.customers.count();
-      setStats({ totalCustomers: cCount, totalOwed: tOwed, totalPaid: totalP });
-    };
+    } catch (err) {
+      console.error(err);
+    }
+  }, []);
+
+  useEffect(() => {
     calcStats();
-  }, []); // Re-run when needed, or just on mount for now
+  }, [calcStats]);
 
   const queryBuilder = useCallback((db) => {
     let query = db.customers;
@@ -75,37 +69,18 @@ export default function Customers() {
   }, [debouncedSearchQuery]);
 
   const transformChunk = useCallback(async (chunk) => {
-    const currentDB = getDB();
-    const customersWithBalance = await Promise.all(
-      chunk.map(async (customer) => {
-        const ledger = await currentDB.customerLedger.where('customerId').equals(customer.id).toArray();
-        const totalCharged = ledger
-          .filter(e => e.type === 'charge' || e.type === 'purchase')
-          .reduce((sum, e) => sum + e.amount, 0);
-        const totalPaid = ledger
-          .filter(e => e.type === 'payment')
-          .reduce((sum, e) => sum + e.amount, 0);
-        return {
-          ...customer,
-          balance: totalCharged - totalPaid,
-          totalPaid
-        };
-      })
-    );
-    return customersWithBalance;
+    return chunk;
   }, []);
 
   const [limit, setLimit] = useState(20);
   const [currentPage, setCurrentPage] = useState(1);
   useEffect(() => { setCurrentPage(1); }, [debouncedSearchQuery, limit]);
 
-  const { data: visibleData, totalCount, isLoading, refresh: refreshCustomers } = useDexieOffsetPagination(
-    queryBuilder, 
-    [debouncedSearchQuery], 
-    currentPage, 
-    limit, 
-    transformChunk
-  );
+  const { data: visibleData, totalItems: totalCount, loading: isLoading, refresh: refreshCustomers, setPageIndex } = useApiPagination({
+    endpoint: '/api/customers',
+    pageSize: limit,
+    search: debouncedSearchQuery
+  });
 
   const totalCustomers = stats.totalCustomers;
   const totalOwed = stats.totalOwed;
@@ -123,12 +98,12 @@ export default function Customers() {
 
   const handleDeleteCustomer = async () => {
     if (!selectedCustomer?.id) return;
-    const currentDB = getDB();
-    await currentDB.customers.delete(selectedCustomer.id);
-    await currentDB.customerLedger.where('customerId').equals(selectedCustomer.id).delete();
+    
+    await api.deleteCustomer(selectedCustomer.id);
     
     clearPaginationCache('customers');
     refreshCustomers();
+    calcStats();
     setConfirmDelete(false);
     setSelectedCustomer(null);
     forceRepaintAfterRender();
@@ -159,11 +134,10 @@ export default function Customers() {
     setConfirmBulkDelete(false);
     setIsDeleting(true);
     try {
-      const currentDB = getDB();
-      await currentDB.customerLedger.where('customerId').anyOf(selectedIds).delete();
-      await currentDB.customers.bulkDelete(selectedIds);
-      
+      await api.deleteCustomersBulk(selectedIds);
+      clearPaginationCache('customers');
       refreshCustomers();
+      calcStats();
       setSelectedIds([]);
       setSelectAll(false);
       forceRepaintAfterRender();
@@ -181,36 +155,23 @@ export default function Customers() {
   }, [visibleData, selectedIds]);
 
   const handleSaveCustomer = async (formData, isEdit = false) => {
-    const currentDB = getDB();
-    
-    if (isEdit && formData.id) {
-      await currentDB.customers.update(formData.id, {
-        name: formData.name,
-        phone: formData.phone || '',
-        email: formData.email || '',
-        address: formData.address || '',
-      });
-      refreshCustomers();
-    } else {
-      const customerId = await currentDB.customers.add({
-        name: formData.name,
-        phone: formData.phone || '',
-        email: formData.email || '',
-        address: formData.address || '',
-        createdAt: new Date().toISOString()
-      });
-
-      if (formData.openingBalance && formData.openingBalance > 0) {
-        await currentDB.customerLedger.add({
-          customerId,
-          type: 'charge',
-          amount: Number(formData.openingBalance),
-          description: 'Opening balance',
-          date: new Date().toISOString()
+    try {
+      if (isEdit && formData.id) {
+        await api.updateCustomer(formData.id, formData);
+        onSuccess('Customer updated');
+      } else {
+        await api.createCustomer({
+          ...formData,
+          openingBalance: parseFloat(formData.openingBalance) || 0
         });
+        onSuccess('Customer created');
       }
-      
+      clearPaginationCache('customers');
       refreshCustomers();
+      calcStats();
+    } catch (e) {
+      console.error(e);
+      onSuccess('Error saving customer');
     }
   };
 
@@ -234,43 +195,50 @@ export default function Customers() {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 pb-2">
-        <h1 className="text-2xl sm:text-3xl font-bold text-slate-900 tracking-tight">Customer Management</h1>
-        <div className="flex items-center gap-3 shrink-0 mt-2 md:mt-0">
-          <GlobalButton
-            icon={Plus}
+      <PageHeader 
+        icon={Users}
+        title="Customer Management"
+        description="View customer profiles, track store credit balances, and manage receivables."
+        action={
+          <button
+            type="button"
             onClick={() => {
               setEditCustomer(null);
               setAddModalOpen(true);
             }}
+            className="bg-blue-600 hover:bg-blue-700 text-white font-medium text-sm px-4 py-2.5 rounded-xl shadow-xs flex items-center gap-2 transition-all"
           >
+            <Plus className="w-4 h-4 stroke-[2.5]" />
             Add Customer
-          </GlobalButton>
-        </div>
-      </div>
+          </button>
+        }
+      />
 
       <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        <div className="rounded-xl border border-slate-200 border-l-4 border-l-blue-500 bg-white p-5 shadow-sm flex flex-col justify-between hover:-translate-y-0.5 hover:shadow-card-hover transition-all duration-200">
-          <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Total Customers</p>
-          <div className="mt-3">
-            <p className="text-2xl font-bold text-slate-900">{totalCustomers.toString()}</p>
-            <p className="text-[11px] font-medium text-slate-500 mt-1">Active customer accounts</p>
-          </div>
-        </div>
-        <div className="rounded-xl border border-slate-200 border-l-4 border-l-blue-500 bg-white p-5 shadow-sm flex flex-col justify-between hover:-translate-y-0.5 hover:shadow-card-hover transition-all duration-200">
-          <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Total Owed</p>
-          <div className="mt-3">
-            <p className="text-2xl font-bold text-slate-900">{formatCurrency(totalOwed, currency)}</p>
-            <p className="text-[11px] font-medium text-slate-500 mt-1">Outstanding balances</p>
-          </div>
-        </div>
-        <div className="rounded-xl border border-slate-200 border-l-4 border-l-blue-500 bg-white p-5 shadow-sm flex flex-col justify-between hover:-translate-y-0.5 hover:shadow-card-hover transition-all duration-200">
-          <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Total Paid</p>
-          <div className="mt-3">
-            <p className="text-2xl font-bold text-slate-900">{formatCurrency(totalPaid, currency)}</p>
-            <p className="text-[11px] font-medium text-slate-500 mt-1">Payments received</p>
-          </div>
-        </div>
+        <StatsCard 
+          title="Total Customers" 
+          value={totalCustomers.toString()} 
+          description="Active customer accounts" 
+          color="blue" 
+          icon={Users} 
+          arrow="forward"
+        />
+        <StatsCard 
+          title="Total Receivables" 
+          value={formatCurrency(totalOwed, currency)} 
+          description="Outstanding balances" 
+          color="amber" 
+          icon={Clock} 
+          arrow="forward"
+        />
+        <StatsCard 
+          title="Total Paid" 
+          value={formatCurrency(totalPaid, currency)} 
+          description="Payments received" 
+          color="emerald" 
+          icon={CheckCircle} 
+          arrow="forward"
+        />
       </div>
 
       <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
@@ -340,7 +308,7 @@ export default function Customers() {
 
           return (
             <div className="mt-2">
-              <GlobalTable
+              <GlobalTable onLoadMore={() => setPageIndex(p => p + 1)} hasMore={visibleData.length < totalCount}
                 data={visibleData}
                 columns={tableColumns}
                 renderRow={(customer, virtualIndex, measureRef) => {
@@ -410,54 +378,7 @@ export default function Customers() {
                 }
               />
               
-              <div className="mt-4 flex flex-col sm:flex-row items-center justify-between gap-4 pt-4 border-t border-slate-200">
-                <div className="flex items-center gap-4 text-xs text-slate-500">
-                  <div>
-                    Showing <span className="font-bold text-slate-700">{startItem}</span> to <span className="font-bold text-slate-700">{endItem}</span> of <span className="font-bold text-slate-700">{totalCount}</span> items
-                  </div>
-                  <div className="h-3 w-px bg-slate-200"></div>
-                  <div className="flex items-center gap-2">
-                    <span>Rows:</span>
-                    <RowsDropdown limit={limit} setLimit={setLimit} />
-                  </div>
-                  {isLoading && <span className="ml-2 animate-pulse text-blue-500">Loading...</span>}
-                </div>
-
-                <div className="flex items-center rounded-lg border border-slate-200 bg-white p-1 shadow-sm text-sm font-medium text-slate-600">
-                  <button 
-                    onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
-                    disabled={currentPage === 1}
-                    className={`flex h-7 w-7 items-center justify-center rounded ${currentPage === 1 ? 'text-slate-300 cursor-not-allowed' : 'text-slate-600 hover:bg-slate-50 hover:text-blue-600'}`}
-                  >
-                    <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" /></svg>
-                  </button>
-                  
-                  {getPageNumbers().map((pageNum, idx) => (
-                    <button
-                      key={idx}
-                      disabled={pageNum === '...'}
-                      onClick={() => typeof pageNum === 'number' && setCurrentPage(pageNum)}
-                      className={`flex h-7 w-7 items-center justify-center rounded ${
-                        pageNum === '...' 
-                          ? 'text-slate-400 cursor-default' 
-                          : pageNum === currentPage 
-                            ? 'bg-blue-50 text-blue-600' 
-                            : 'hover:bg-slate-50'
-                      }`}
-                    >
-                      {pageNum}
-                    </button>
-                  ))}
-
-                  <button 
-                    onClick={() => setCurrentPage(prev => Math.min(totalPages, prev + 1))}
-                    disabled={currentPage === totalPages}
-                    className={`flex h-7 w-7 items-center justify-center rounded ${currentPage === totalPages ? 'text-slate-300 cursor-not-allowed' : 'text-slate-600 hover:bg-slate-50 hover:text-blue-600'}`}
-                  >
-                    <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
-                  </button>
-                </div>
-              </div>
+              
             </div>
           );
         }, [visibleData, currentPage, limit, totalCount, isLoading, selectAll, selectedIds])}

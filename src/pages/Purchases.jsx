@@ -1,8 +1,11 @@
+import { useApiPagination } from '@/hooks/useApiPagination';
+import { api } from '@/lib/api';
 import { useEffect, useMemo, useState, useCallback, memo, forwardRef, useImperativeHandle, useRef } from 'react';
 
-import { Plus, Printer, X, Search, FileText, BookOpen, Trash2 } from 'lucide-react';
+import { Plus, Printer, X, Search, FileText, BookOpen, Trash2, ShoppingCart, DollarSign, Clock } from 'lucide-react';
 import { useReactToPrint } from 'react-to-print';
 import PageHeader from '@/components/PageHeader';
+import StatsCard from '@/components/StatsCard';
 import PrintWrapper from '@/components/PrintWrapper';
 import SupplierA4Invoice from '@/components/SupplierA4Invoice';
 import ConfirmDialog from '@/components/ConfirmDialog';
@@ -18,7 +21,6 @@ import GlobalButton from '@/components/GlobalButton';
 import RowsDropdown from '@/components/RowsDropdown';
 import ColumnVisibilityDropdown from '@/components/ColumnVisibilityDropdown';
 import { useDebounce } from '@/hooks/useDebounce';
-import { useSparsePagination } from '@/hooks/useSparsePagination';
 import { formatCurrency, formatDate, removeLeadingZeros, forceRepaintAfterRender } from '@/lib/utils';
 
 
@@ -137,6 +139,26 @@ const PurchaseFormModal = memo(forwardRef(({ currency, onSuccess }, ref) => {
     fetchSupps();
   }, [debouncedSupplierSearch, openForm]);
 
+  const handleSelectProduct = (product) => {
+    setSelectedProduct(product);
+    setItemForm(prev => ({
+      ...prev,
+      productId: product.id,
+      costPrice: (product.costPrice !== undefined && product.costPrice !== null && Number(product.costPrice) > 0)
+        ? String(product.costPrice)
+        : prev.costPrice
+    }));
+    setProductSearch(product.name);
+    setIsProductDropdownOpen(false);
+  };
+
+  const handleSelectSupplier = (supplier) => {
+    setTransaction(prev => ({ ...prev, supplierId: supplier.id }));
+    setSelectedSupplier(supplier);
+    setSupplierBalance(supplier.balance !== undefined ? Number(supplier.balance) : (supplier.openingBalance || 0));
+    setSupplierSearch(supplier.name);
+    setIsSupplierDropdownOpen(false);
+  };
 
   const handleSaveNewSupplier = async () => {
     if (!newSupplier.name.trim() || !newSupplier.phone.trim()) {
@@ -148,18 +170,23 @@ const PurchaseFormModal = memo(forwardRef(({ currency, onSuccess }, ref) => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          ...newSupplier,
+          name: newSupplier.name.trim(),
+          phone: newSupplier.phone.trim(),
+          email: newSupplier.email.trim(),
+          address: newSupplier.address.trim(),
           openingBalance: parseFloat(newSupplier.openingBalance) || 0
         })
       });
       if (!res.ok) throw new Error('Failed to create supplier');
       const data = await res.json();
       const created = data.data || data;
-      setTransaction({ ...transaction, supplierId: created.id });
-      setSupplierSearch('');
+      setTransaction(prev => ({ ...prev, supplierId: created.id }));
+      setSelectedSupplier(created);
+      setSupplierBalance(created.balance !== undefined ? Number(created.balance) : (created.openingBalance || 0));
+      setSupplierSearch(created.name);
       setShowAddSupplierForm(false);
       setNewSupplier({ name: '', phone: '', email: '', address: '', openingBalance: '' });
-      
+      setFormError(null);
     } catch (err) {
       console.error(err);
       setFormError('Failed to create new supplier.');
@@ -424,8 +451,23 @@ const PurchaseFormModal = memo(forwardRef(({ currency, onSuccess }, ref) => {
                           onFocus={() => { setIsProductDropdownOpen(true); setProductSearch(''); }}
                           onBlur={() => setTimeout(() => setIsProductDropdownOpen(false), 200)}
                         />
-                        <div className="absolute inset-y-0 right-0 flex items-center pr-3 pointer-events-none text-slate-400">
-                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2"></path></svg>
+                        <div className="absolute inset-y-0 right-0 flex items-center pr-3 text-slate-400">
+                          {selectedProduct ? (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setSelectedProduct(null);
+                                setItemForm(prev => ({ ...prev, productId: 0 }));
+                                setProductSearch('');
+                              }}
+                              className="p-1 hover:text-rose-500 hover:bg-slate-100 rounded-full transition-colors"
+                              title="Clear product"
+                            >
+                              <X className="w-4 h-4" />
+                            </button>
+                          ) : (
+                            <svg className="w-4 h-4 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2"></path></svg>
+                          )}
                         </div>
                         
                         {isProductDropdownOpen && (productSearch || formCategoryFilter !== 'All') && (
@@ -433,7 +475,10 @@ const PurchaseFormModal = memo(forwardRef(({ currency, onSuccess }, ref) => {
                             {productResults.map((product) => (
                               <div
                                 key={product.id}
-                                onClick={() => { setItemForm({ ...itemForm, productId: product.id }); setIsProductDropdownOpen(false); }}
+                                onMouseDown={(e) => {
+                                  e.preventDefault();
+                                  handleSelectProduct(product);
+                                }}
                                 className="px-4 py-3 hover:bg-slate-50 cursor-pointer border-b border-slate-100 last:border-0 transition-colors"
                               >
                                 <div className="flex justify-between items-start">
@@ -624,9 +669,18 @@ const PurchaseFormModal = memo(forwardRef(({ currency, onSuccess }, ref) => {
                     
                     {/* Supplier */}
                     <div>
-                      <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5" htmlFor="supplier-input">
-                        Supplier <span className="text-slate-400 font-normal lowercase">(optional)</span>
-                      </label>
+                      <div className="flex items-center justify-between mb-1.5">
+                        <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider" htmlFor="supplier-input">
+                          Supplier <span className="text-slate-400 font-normal lowercase">(optional)</span>
+                        </label>
+                        <button
+                          type="button"
+                          onClick={() => setShowAddSupplierForm(true)}
+                          className="text-xs font-bold text-indigo-600 hover:text-indigo-800 flex items-center gap-1 hover:underline"
+                        >
+                          <Plus className="w-3.5 h-3.5" /> Register New Supplier
+                        </button>
+                      </div>
                       <div className="relative">
                         <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-400">
                           <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2"></path></svg>
@@ -634,19 +688,39 @@ const PurchaseFormModal = memo(forwardRef(({ currency, onSuccess }, ref) => {
                         <input 
                           id="supplier-input"
                           type="text" 
-                          className="w-full bg-white text-slate-800 text-sm font-medium rounded-lg border border-slate-200 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 py-2 pl-9 pr-3.5 shadow-sm transition-all" 
-                          placeholder="Enter supplier name" 
+                          className="w-full bg-white text-slate-800 text-sm font-medium rounded-lg border border-slate-200 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 py-2 pl-9 pr-9 shadow-sm transition-all" 
+                          placeholder="Search or enter supplier name..." 
                           value={isSupplierDropdownOpen ? supplierSearch : selectedSupplier?.name || ''}
                           onChange={(e) => setSupplierSearch(e.target.value)}
                           onFocus={() => { setIsSupplierDropdownOpen(true); setSupplierSearch(''); }}
                           onBlur={() => setTimeout(() => setIsSupplierDropdownOpen(false), 200)}
                         />
+                        {selectedSupplier && (
+                          <div className="absolute inset-y-0 right-0 flex items-center pr-3">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setSelectedSupplier(null);
+                                setTransaction(prev => ({ ...prev, supplierId: 0 }));
+                                setSupplierSearch('');
+                                setSupplierBalance(0);
+                              }}
+                              className="p-1 hover:text-rose-500 hover:bg-slate-100 rounded-full transition-colors text-slate-400"
+                              title="Clear supplier"
+                            >
+                              <X className="w-4 h-4" />
+                            </button>
+                          </div>
+                        )}
                         {isSupplierDropdownOpen && supplierSearch && (
                           <div className="absolute top-full left-0 right-0 z-50 mt-1 max-h-64 overflow-y-auto rounded-xl border border-slate-200 bg-white shadow-lg">
                             {supplierResults.map((supplier) => (
                               <div
                                 key={supplier.id}
-                                onClick={() => { setTransaction({ ...transaction, supplierId: supplier.id }); setIsSupplierDropdownOpen(false); }}
+                                onMouseDown={(e) => {
+                                  e.preventDefault();
+                                  handleSelectSupplier(supplier);
+                                }}
                                 className="px-4 py-3 hover:bg-slate-50 cursor-pointer border-b border-slate-100 last:border-0"
                               >
                                 <p className="font-medium text-slate-900">
@@ -656,7 +730,20 @@ const PurchaseFormModal = memo(forwardRef(({ currency, onSuccess }, ref) => {
                               </div>
                             ))}
                             {supplierResults.length === 0 && (
-                              <div className="px-4 py-3 text-sm text-slate-500">No suppliers found</div>
+                              <div className="px-4 py-3 text-sm text-slate-500 text-center">
+                                <p className="mb-2">No suppliers found</p>
+                                <button
+                                  type="button"
+                                  onMouseDown={(e) => {
+                                    e.preventDefault();
+                                    setShowAddSupplierForm(true);
+                                    setIsSupplierDropdownOpen(false);
+                                  }}
+                                  className="text-xs font-bold text-indigo-600 hover:text-indigo-800 underline"
+                                >
+                                  + Register new supplier
+                                </button>
+                              </div>
                             )}
                           </div>
                         )}
@@ -843,6 +930,115 @@ const PurchaseFormModal = memo(forwardRef(({ currency, onSuccess }, ref) => {
           </div>
         </footer>
         {/* END: ModalFooter */}
+
+        {/* Modal: Register New Supplier */}
+        {showAddSupplierForm && (
+          <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-sm animate-in fade-in duration-150">
+            <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl animate-in zoom-in-95 duration-150">
+              <div className="flex items-center justify-between pb-3 mb-4 border-b border-slate-100">
+                <div>
+                  <h3 className="text-lg font-bold text-slate-900">Register New Supplier</h3>
+                  <p className="text-xs text-slate-500">Quickly add a vendor for this purchase invoice.</p>
+                </div>
+                <button 
+                  type="button" 
+                  onClick={() => setShowAddSupplierForm(false)} 
+                  className="p-1 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <div className="space-y-3.5">
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">
+                    Supplier Name <span className="text-rose-500">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={newSupplier.name}
+                    onChange={(e) => setNewSupplier({ ...newSupplier, name: e.target.value })}
+                    placeholder="e.g. Acme Supplies"
+                    className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none"
+                  />
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 mb-1">
+                      Phone Number <span className="text-rose-500">*</span>
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      value={newSupplier.phone}
+                      onChange={(e) => setNewSupplier({ ...newSupplier, phone: e.target.value })}
+                      placeholder="0300-1234567"
+                      className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 mb-1">
+                      Email <span className="text-slate-400 font-normal">(optional)</span>
+                    </label>
+                    <input
+                      type="email"
+                      value={newSupplier.email}
+                      onChange={(e) => setNewSupplier({ ...newSupplier, email: e.target.value })}
+                      placeholder="Optional"
+                      className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">
+                    Address <span className="text-slate-400 font-normal">(optional)</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={newSupplier.address}
+                    onChange={(e) => setNewSupplier({ ...newSupplier, address: e.target.value })}
+                    placeholder="City or warehouse address"
+                    className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">
+                    Opening Balance ({currency}) <span className="text-slate-400 font-normal">(optional)</span>
+                  </label>
+                  <input
+                    type="number"
+                    value={newSupplier.openingBalance}
+                    onChange={(e) => setNewSupplier({ ...newSupplier, openingBalance: e.target.value })}
+                    placeholder="0.00"
+                    className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none"
+                  />
+                  <p className="text-[10px] text-slate-500 mt-1">Amount owed to this supplier prior to this invoice.</p>
+                </div>
+              </div>
+
+              <div className="flex gap-2.5 pt-4 mt-4 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setShowAddSupplierForm(false)}
+                  className="flex-1 py-2 rounded-xl border border-slate-200 font-bold text-slate-700 text-sm hover:bg-slate-50 transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSaveNewSupplier}
+                  className="flex-1 py-2 rounded-xl bg-indigo-600 text-white font-bold text-sm hover:bg-indigo-700 transition-colors shadow-sm"
+                >
+                  Save Supplier
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -911,41 +1107,34 @@ export default function Purchases() {
     setReceiptOpen(true);
   };
 
-  useEffect(() => {
-    const load = async () => {
-      await initDB();
-    };
-    load();
-  }, []);
+
 
   const [limit, setLimit] = useState(20);
-  const { data: visibleData, totalItems: totalCount, fetchPage, pageSize, refresh } = useSparsePagination({
+  const { data: visibleData, totalItems: totalCount, loading: isLoading, refresh: refreshPurchases, setPageIndex } = useApiPagination({
     endpoint: '/api/purchases',
     pageSize: limit,
     search: debouncedHistorySearchQuery
   });
 
   const handleRangeChange = useCallback(({ startIndex, endIndex }) => {
-    const startPage = Math.floor(startIndex / pageSize);
-    const endPage = Math.floor(endIndex / pageSize);
-    for (let p = startPage; p <= endPage; p++) {
-      fetchPage(p);
-    }
-  }, [fetchPage, pageSize]);
+    // Removed legacy Dexie fetchPage logic
+  }, []);
 
   const [stats, setStats] = useState({ totalSpent: 0, totalOutstanding: 0 });
 
   useEffect(() => {
     const fetchStats = async () => {
-      const db = getDB();
-      const allPurchases = await db.purchases.toArray();
-      let spent = 0;
-      let outstanding = 0;
-      allPurchases.forEach(p => {
-        spent += (p.totalCost || 0);
-        outstanding += ((p.totalCost || 0) - (p.amountPaid || 0));
-      });
-      setStats({ totalSpent: spent, totalOutstanding: outstanding });
+      try {
+        const res = await api.getPurchases();
+        const summary = res.summary || {};
+        setStats({ 
+          totalPurchases: summary.totalCount || 0, 
+          totalSpent: summary.totalSpent || 0, 
+          outstanding: summary.outstanding || 0 
+        });
+      } catch (err) {
+        console.error(err);
+      }
     };
     fetchStats();
   }, [totalCount]);
@@ -989,40 +1178,47 @@ const deletePurchase = async (purchase) => {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 pb-2">
-        <h1 className="text-2xl sm:text-3xl font-bold text-slate-900 tracking-tight">Purchase Management</h1>
-        <div className="flex items-center gap-3 shrink-0 mt-2 md:mt-0">
-          <GlobalButton
-            icon={Plus}
+      <PageHeader 
+        icon={ShoppingCart}
+        title="Purchase Management"
+        description="Record vendor procurement, track purchase orders, and monitor supplier payables."
+        action={
+          <button
+            type="button"
             onClick={openNewPurchase}
+            className="bg-blue-600 hover:bg-blue-700 text-white font-medium text-sm px-4 py-2.5 rounded-xl shadow-xs flex items-center gap-2 transition-all"
           >
+            <Plus className="w-4 h-4 stroke-[2.5]" />
             Record Purchase
-          </GlobalButton>
-        </div>
-      </div>
+          </button>
+        }
+      />
 
       <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        <div className="rounded-xl border border-slate-200 border-l-4 border-l-blue-500 bg-white p-5 shadow-sm flex flex-col justify-between hover:-translate-y-0.5 hover:shadow-card-hover transition-all duration-200">
-          <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Total Purchases</p>
-          <div className="mt-3">
-            <p className="text-2xl font-bold text-slate-900">{totalCount || 0}</p>
-            <p className="text-[11px] font-medium text-slate-500 mt-1">Recorded purchase transactions</p>
-          </div>
-        </div>
-        <div className="rounded-xl border border-slate-200 border-l-4 border-l-blue-500 bg-white p-5 shadow-sm flex flex-col justify-between hover:-translate-y-0.5 hover:shadow-card-hover transition-all duration-200">
-          <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Total Spent</p>
-          <div className="mt-3">
-            <p className="text-2xl font-bold text-slate-900">{formatCurrency(stats.totalSpent, currency)}</p>
-            <p className="text-[11px] font-medium text-slate-500 mt-1">Total value of all purchases</p>
-          </div>
-        </div>
-        <div className="rounded-xl border border-slate-200 border-l-4 border-l-blue-500 bg-white p-5 shadow-sm flex flex-col justify-between hover:-translate-y-0.5 hover:shadow-card-hover transition-all duration-200">
-          <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Total Outstanding</p>
-          <div className="mt-3">
-            <p className="text-2xl font-bold text-slate-900">{formatCurrency(stats.totalOutstanding, currency)}</p>
-            <p className="text-[11px] font-medium text-slate-500 mt-1">Unpaid purchase balances</p>
-          </div>
-        </div>
+        <StatsCard 
+          title="Total Purchases" 
+          value={(totalCount || 0).toLocaleString()} 
+          description="Recorded purchase transactions" 
+          color="blue" 
+          icon={ShoppingCart} 
+          arrow="forward" 
+        />
+        <StatsCard 
+          title="Total Spent" 
+          value={formatCurrency(stats.totalSpent, currency)} 
+          description="Total value of all purchases" 
+          color="emerald" 
+          icon={DollarSign} 
+          arrow="forward" 
+        />
+        <StatsCard 
+          title="Total Outstanding" 
+          value={formatCurrency(stats.totalOutstanding, currency)} 
+          description="Unpaid purchase balances" 
+          color="amber" 
+          icon={Clock} 
+          arrow="forward" 
+        />
       </div>
 
       <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-panel">
@@ -1070,7 +1266,7 @@ const deletePurchase = async (purchase) => {
 
             return (
               <div className="mt-2">
-                <GlobalTable
+                <GlobalTable onLoadMore={() => setPageIndex(p => p + 1)} hasMore={visibleData.length < totalCount}
                   data={visibleData}
                   columns={tableColumns}
                   renderRow={(purchase, virtualIndex, measureRef) => {    if (!purchase) {
@@ -1142,7 +1338,7 @@ const deletePurchase = async (purchase) => {
                     </tr>
                   );
                   }}
-                  hasMore={false}
+                  
           onRangeChange={handleRangeChange}
           emptyState={
                     <div className="p-8 text-center text-slate-500">

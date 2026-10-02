@@ -1,22 +1,25 @@
+import { api } from '@/lib/api';
 import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
+import { useApiPagination } from '@/hooks/useApiPagination';
 import { Search, Trash2, Printer, CheckCircle, ShoppingCart, Plus, BookOpen } from 'lucide-react';
 import { useReactToPrint } from 'react-to-print';
 import PageHeader from '@/components/PageHeader';
+import StatsCard from '@/components/StatsCard';
 import ConfirmDialog from '@/components/ConfirmDialog';
 import BulkDeleteBar from '@/components/BulkDeleteBar';
-import { initDB, getDB } from '@/lib/db';
+
 import { formatCurrency, formatDate, removeLeadingZeros, forceRepaintAfterRender } from '@/lib/utils';
 import { useSettings } from '@/hooks/useSettings';
 import { useMultiSelect } from '@/hooks/useMultiSelect';
 import { useDebounce } from '@/hooks/useDebounce';
 import { useBusiness } from '@/contexts/BusinessContext';
-import { useDexieOffsetPagination, clearPaginationCache } from '@/hooks/useDexiePagination';
+
 import GlobalTable from '@/components/GlobalTable';
 import GlobalSearch from '@/components/GlobalSearch';
 import GlobalButton from '@/components/GlobalButton';
 import RowsDropdown from '@/components/RowsDropdown';
 import ColumnVisibilityDropdown from '@/components/ColumnVisibilityDropdown';
-import { useLiveQuery } from 'dexie-react-hooks';
+
 import Barcode from 'react-barcode';
 const paymentMethods = ['Cash', 'Card', 'Other'];
 
@@ -65,7 +68,7 @@ export default function Sales() {
         setMatchingCustomerIds([]);
         return;
       }
-      const db = getDB();
+      
       const term = debouncedHistorySearchQuery.toLowerCase();
       const customers = await db.customers.filter(c => c.name.toLowerCase().includes(term) || (c.phone && c.phone.includes(term))).toArray();
       setMatchingCustomerIds(customers.map(c => c.id));
@@ -73,134 +76,116 @@ export default function Sales() {
     fetchCustomers();
   }, [debouncedHistorySearchQuery]);
 
-  const queryBuilder = useCallback((db) => {
-    return db.sales.orderBy('date').reverse().filter((s) => {
-      const d = new Date(s.date);
-      const localDateStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-      if (fromDate && localDateStr < fromDate) return false;
-      if (toDate && localDateStr > toDate) return false;
+  
 
-      if (debouncedHistorySearchQuery) {
-        const q = debouncedHistorySearchQuery.toLowerCase();
-        
-        // Search by Invoice ID formats
-        const invStr = `inv-${s.id?.toString().padStart(5, '0')}`.toLowerCase();
-        if (s.id?.toString().includes(q) || invStr.includes(q)) return true;
-        
-        // Search by amount
-        if (s.totalAmount?.toString().includes(q)) return true;
-        
-        // Search by customer name (via matching IDs) or 'walk-in'
-        if (s.customerId && matchingCustomerIds.includes(s.customerId)) return true;
-        if (!s.customerId && 'walk-in'.includes(q)) return true;
-        if (!s.customerId && 'walkin'.includes(q)) return true;
-        
-        // Search by Payment Method
-        if (s.paymentMethod?.toLowerCase().includes(q)) return true;
-        
-        // Search by Items
-        const itemMatch = s.items?.some(item => 
-          item.productName?.toLowerCase().includes(q) || 
-          item.barcode?.toLowerCase().includes(q) ||
-          item.productId?.toString().includes(q)
-        );
-        if (itemMatch) return true;
-        return false;
-      }
-
-      return true;
-    });
-  }, [fromDate, toDate, debouncedHistorySearchQuery, matchingCustomerIds]);
-
-  const transformChunk = useCallback(async (chunk) => {
-    const currentDB = getDB();
-    const customerIds = [...new Set(chunk.map(s => s.customerId).filter(Boolean))];
-    const customers = await currentDB.customers.where('id').anyOf(customerIds).toArray();
-    const customerMap = new Map(customers.map(c => [c.id, c.name]));
-    
-    return chunk.map(sale => {
-      let customerName = 'Walk-in';
-      if (sale.customerId && customerMap.has(sale.customerId)) {
-        customerName = customerMap.get(sale.customerId);
-      }
-      return {
-        ...sale,
-        customerName: customerName,
-      };
-    });
-  }, []);
+  
 
   const [limit, setLimit] = useState(20);
   const [currentPage, setCurrentPage] = useState(1);
   useEffect(() => { setCurrentPage(1); }, [fromDate, toDate, debouncedHistorySearchQuery, limit]);
 
-  const { data: visibleData, totalCount, isLoading, refresh: refreshSales } = useDexieOffsetPagination(
-    queryBuilder, 
-    [fromDate, toDate, debouncedHistorySearchQuery], 
-    currentPage, 
-    limit, 
-    transformChunk
-  );
+  const { data: visibleData, totalItems: totalCount, loading: isLoading, refresh: refreshSales, setPageIndex } = useApiPagination({
+    endpoint: '/api/sales',
+    pageSize: limit,
+    search: debouncedHistorySearchQuery,
+    fromDate,
+    toDate
+  });
 
   const [stats, setStats] = useState({ totalSales: 0, totalRevenue: 0 });
 
   useEffect(() => {
     const fetchStats = async () => {
-      const db = getDB();
-      const collection = queryBuilder(db);
-      const count = await collection.count();
-      let revenue = 0;
-      await collection.each(s => { revenue += (s.totalAmount || 0); });
-      setStats({ totalSales: count, totalRevenue: revenue });
+      try {
+        const res = await api.getSales();
+        const summary = res.summary || {};
+        setStats({ totalSales: summary.totalCount || 0, totalRevenue: summary.totalAmount || 0 });
+      } catch (err) {
+        console.error(err);
+      }
     };
     fetchStats();
-  }, [totalCount, queryBuilder]);
+  }, [totalCount]);
 
   const { selectedIds: selectedSalesIds, isSelected: isSalesSelected, toggleOne: toggleSaleOne, toggleAll: toggleSalesAll, clearSelection: clearSalesSelection, isAllSelected: isAllSalesSelected, selectedCount: selectedSalesCount } = useMultiSelect(visibleData);
+
+  const performBulkDeleteSales = async () => {
+    if (selectedSalesIds.length === 0) return;
+    setIsDeleting(true);
+    try {
+      await api.deleteSalesBulk(selectedSalesIds);
+      clearSalesSelection();
+      refreshSales();
+      onSuccess('Sales deleted successfully');
+    } catch (error) {
+      console.error('Error deleting sales:', error);
+      onSuccess('Failed to delete sales');
+    } finally {
+      setIsDeleting(false);
+      setConfirmBulkDelete(false);
+    }
+  };
 
   const debouncedSearchQuery = useDebounce(searchQuery, 300);
   const debouncedCustomerSearch = useDebounce(customerSearch, 300);
 
-    const searchResults = useLiveQuery(
-    async () => {
-      const currentDB = getDB();
-      if (!debouncedSearchQuery) {
-        return await currentDB.products.limit(100).toArray();
+    
+  const [searchResults, setSearchResults] = useState([]);
+  useEffect(() => {
+    const fetchSearch = async () => {
+      try {
+        const query = debouncedSearchQuery ? `?search=${encodeURIComponent(debouncedSearchQuery)}` : '';
+        const res = await api.getProducts({ search: debouncedSearchQuery });
+        if (res?.data?.data) {
+          setSearchResults(res.data.data.slice(0, 20));
+        } else {
+          setSearchResults([]);
+        }
+      } catch (e) {
+        console.error(e);
+        setSearchResults([]);
       }
-      const term = debouncedSearchQuery.toLowerCase();
-      return await currentDB.products
-        .where('name').startsWithIgnoreCase(term)
-        .or('barcode').startsWithIgnoreCase(term)
-        .limit(20)
-        .toArray();
-    },
-    [debouncedSearchQuery],
-    []
-  );
+    };
+    fetchSearch();
+  }, [debouncedSearchQuery]);
 
-  const customerResults = useLiveQuery(
-    async () => {
-      if (!debouncedCustomerSearch || debouncedCustomerSearch.length < 1) return [];
-      const term = debouncedCustomerSearch.toLowerCase();
-      const currentDB = getDB();
-      return await currentDB.customers
-        .where('name').startsWithIgnoreCase(term)
-        .or('phone').startsWithIgnoreCase(term)
-        .limit(10)
-        .toArray();
-    },
-    [debouncedCustomerSearch],
-    []
-  );
+
+  
+  const [customerResults, setCustomerResults] = useState([]);
+  useEffect(() => {
+    const fetchCustomers = async () => {
+      if (!debouncedCustomerSearch || debouncedCustomerSearch.length < 1) {
+        setCustomerResults([]);
+        return;
+      }
+      try {
+        const query = debouncedCustomerSearch ? `?search=${encodeURIComponent(debouncedCustomerSearch)}` : '';
+        const res = await api.getCustomers({ search: debouncedCustomerSearch });
+        if (res?.data?.data) {
+          setCustomerResults(res.data.data.slice(0, 10));
+        } else {
+          setCustomerResults([]);
+        }
+      } catch (e) {
+        console.error(e);
+        setCustomerResults([]);
+      }
+    };
+    fetchCustomers();
+  }, [debouncedCustomerSearch]);
+
 
   useEffect(() => {
+    
     const loadInitialData = async () => {
-      await initDB();
-      const currentDB = getDB();
-      // Only keep inventory for stock display check in dropdown
-      const inventoryData = await currentDB.inventory.toArray();
-      setInventory(inventoryData);
+      try {
+        const inventoryData = await api.getInventory();
+        setInventory(inventoryData || []);
+      } catch (e) {
+        setInventory([]);
+      }
     };
+
     loadInitialData();
   }, []);
 
@@ -210,8 +195,8 @@ export default function Sales() {
         setCustomerBalance(null);
         return;
       }
-      const currentDB = getDB();
-      const ledgerTable = currentDB.customerLedger;
+      
+      
       const idField = 'customerId';
       const ledger = await ledgerTable.where(idField).equals(selectedCustomer.id).toArray();
       const charged = ledger
@@ -270,8 +255,16 @@ export default function Sales() {
     const barcode = value.trim();
     if (!barcode) return;
 
-    const currentDB = getDB();
-    const product = await currentDB.products.where('barcode').equals(barcode).first();
+    
+    
+    let product = null;
+    try {
+      const res = await api.getProducts({ search: barcode });
+      if (res?.data?.data?.length > 0) {
+        product = res.data.data.find(p => p.barcode === barcode);
+      }
+    } catch(e) {}
+
     if (!product) {
       setScanFeedback({ msg: `Î“Â£Ã¹ No product found for barcode: ${barcode}`, type: 'error' });
       setBarcodeValue('');
@@ -280,7 +273,7 @@ export default function Sales() {
       return;
     }
 
-    const inventoryItem = await currentDB.inventory.where('productId').equals(product.id).first();
+
     if (inventoryItem && inventoryItem.quantity <= 0) {
       setScanFeedback({ msg: `Î“Â£Ã¹ ${product.name} is out of stock!`, type: 'error' });
       setBarcodeValue('');
@@ -348,70 +341,47 @@ export default function Sales() {
 
   const completeSaleLogic = async () => {
     if (cart.length === 0) return;
-    const currentDB = getDB();
-    const saleDate = new Date().toISOString();
-    const sale = {
-      items: cart,
-      totalAmount,
-      discount: Number(discount) || 0,
-      paymentMethod: selectedCustomer ? 'customer_account' : paymentMethod,
-      customerId: selectedCustomer?.id ?? null,
-      date: saleDate,
-      returned: false,
-    };
-    const id = await currentDB.sales.add(sale);
-    
-    await Promise.all(
-      cart.map(async (item) => {
-        const inventoryItem = await currentDB.inventory.where('productId').equals(item.productId).first();
-        if (inventoryItem && inventoryItem.id) {
-          const updatedQuantity = Math.max(0, inventoryItem.quantity - item.qty);
-          await currentDB.inventory.update(inventoryItem.id, {
-            quantity: updatedQuantity,
-            lastUpdated: new Date().toISOString(),
-          });
-        }
-      })
-    );
-
-    if (selectedCustomer) {
-      await currentDB.customerLedger.add({
-        customerId: selectedCustomer.id,
-        type: 'charge',
-        amount: totalAmount,
-        description: `Purchase - Sale #${id}`,
+    try {
+      const saleDate = new Date().toISOString();
+      const sale = {
+        businessId: business?.id,
         date: saleDate,
-      });
+        customerId: selectedCustomer?.id ?? null,
+        subtotal: Number(cartSubtotal.toFixed(2)),
+        discount: Number(discount) || 0,
+        total: Number(totalAmount.toFixed(2)),
+        paid: Number(parseFloat(amountPaying) || 0),
+        items: cart.map(item => ({
+          productId: item.id,
+          name: item.name,
+          quantity: item.qty || item.cartQuantity || 1,
+          price: item.price,
+          subtotal: item.price * (item.qty || item.cartQuantity || 1)
+        }))
+      };
 
-      const parsedAmountPaying = parseFloat(amountPaying) || 0;
-      const validatedAmountPaying = Math.min(parsedAmountPaying, totalAmount);
-      if (validatedAmountPaying > 0) {
-        await currentDB.customerLedger.add({
-          customerId: selectedCustomer.id,
-          type: 'payment',
-          amount: validatedAmountPaying,
-          description: `Payment at sale #${id}`,
-          date: saleDate,
-        });
-      }
+      const res = await api.createSale(sale);
+      const newSaleId = res?.data?.id || res?.id || crypto.randomUUID();
+      
+      setReceiptSale({ ...sale, id: newSaleId });
+      setReceiptCustomer(selectedCustomer);
+      setReceiptAmountPaid(parseFloat(amountPaying) || 0);
+      setReceiptOpen(true);
+      
+      setCart([]);
+      setDiscount('');
+      setAmountPaying('');
+      setSelectedCustomer(null);
+      setCustomerSearch('');
+      setCustomerBalance(null);
+      setPaymentMethod('Cash');
+      
+      onSuccess('Sale completed successfully');
+      refreshSales();
+    } catch (e) {
+      console.error(e);
+      onSuccess('Failed to complete sale');
     }
-
-    const updatedInventory = await currentDB.inventory.toArray();
-    setInventory(updatedInventory);
-
-    setReceiptSale({ ...sale, id });
-    setReceiptCustomer(selectedCustomer);
-    setReceiptAmountPaid(parseFloat(amountPaying) || 0);
-    setReceiptOpen(true);
-    setCart([]);
-    setSelectedCustomer(null);
-    setAmountPaying('');
-    setCustomerSearch('');
-    setCustomerBalance(null);
-    setDiscount('');
-    setPaymentMethod('Cash');
-
-    refreshSales();
   };
 
   const completeSale = async () => {
@@ -432,132 +402,21 @@ export default function Sales() {
   };
 
   const performReturnSale = async () => {
-    if (!returningSale) return;
-
-    const sale = returningSale;
-    const currentDB = getDB();
-
-    const totalPreDiscountSubtotal = sale.items.reduce((s, i) => s + (i.subtotal || 0), 0);
-    const discountRatio = totalPreDiscountSubtotal > 0 ? sale.totalAmount / totalPreDiscountSubtotal : 1;
-
-    await Promise.all(
-      sale.items.map(async (item) => {
-        const inventoryItem = await currentDB.inventory.where('productId').equals(item.productId).first();
-        if (inventoryItem && inventoryItem.id) {
-          const newQty = Math.max(0, inventoryItem.quantity + item.qty);
-          await currentDB.inventory.update(inventoryItem.id, { quantity: newQty, lastUpdated: new Date().toISOString() });
-        }
-
-        const adjustedRefundAmount = Math.round(item.subtotal * discountRatio * 100) / 100;
-
-        await currentDB.salesReturns.add({
-          originalSaleId: sale.id,
-          productId: item.productId,
-          productName: item.productName,
-          quantity: item.qty,
-          refundAmount: adjustedRefundAmount,
-          reason: 'Customer return',
-          refundMethod: sale.paymentMethod,
-          customerId: sale.customerId || null,
-          date: new Date().toISOString(),
-        });
-      })
-    );
-
-    if (sale.customerId) {
-      await currentDB.customerLedger.add({
-        customerId: sale.customerId,
-        type: 'charge',
-        amount: -sale.totalAmount,
-        description: `Return reversal for sale #${sale.id}`,
-        date: new Date().toISOString(),
-      });
-
-      const paymentEntries = await currentDB.customerLedger
-        .where('customerId')
-        .equals(sale.customerId)
-        .toArray();
-      
-      const paymentsToReverse = paymentEntries.filter(
-        (entry) => entry.type === 'payment' && entry.description && entry.description.includes(`sale #${sale.id}`)
-      );
-
-      for (const payment of paymentsToReverse) {
-        await currentDB.customerLedger.add({
-          customerId: sale.customerId,
-          type: 'payment_reversal',
-          amount: -payment.amount,
-          description: `Payment reversal for sale #${sale.id}`,
-          date: new Date().toISOString(),
-        });
-      }
-    }
-
-    await currentDB.sales.update(sale.id, { returned: true });
-
-    const [updatedInventory] = await Promise.all([
-      currentDB.inventory.toArray(),
-    ]);
-
-    setInventory(updatedInventory);
-    refreshSales();
-
-    setViewSale(null);
-    setReturningSale(null);
-    setConfirmReturnSale(false);
-    setReturnSuccessMessage('Sale returned and inventory restored successfully.');
-    
-    setTimeout(() => setReturnSuccessMessage(null), 3000);
-  };
-
-  const deleteSelectedSales = () => {
-    if (selectedSalesCount === 0) return;
-    setConfirmBulkDelete(true);
-  };
-
-  const performBulkDeleteSales = async () => {
-    setConfirmBulkDelete(false);
-    setIsDeleting(true);
+    if (!saleToReturn) return;
     try {
-      const currentDB = getDB();
+      await api.deleteSale(saleToReturn.id);
       
-      for (const saleId of selectedSalesIds) {
-        const sale = visibleData.find((s) => s.id === saleId);
-        
-        if (sale && sale.returned !== true && sale.items && Array.isArray(sale.items)) {
-          for (const item of sale.items) {
-            if (item.productId && item.qty) {
-              const inventoryItem = await currentDB.inventory.where('productId').equals(item.productId).first();
-              if (inventoryItem && inventoryItem.id) {
-                const restoredQuantity = inventoryItem.quantity + item.qty;
-                await currentDB.inventory.update(inventoryItem.id, { quantity: restoredQuantity, lastUpdated: new Date().toISOString() });
-              }
-            }
-          }
-        }
-      }
+      setReturnModalOpen(false);
+      setSaleToReturn(null);
+      setReturnReason('');
       
-      // Bulk delete the sales
-      await currentDB.sales.bulkDelete(selectedSalesIds);
-
-      
-      // Re-fetch inventory from DB and update local state
-      const updatedInventory = await currentDB.inventory.toArray();
-      setInventory(updatedInventory);
-      
-      clearSalesSelection();
-      forceRepaintAfterRender();
-    } catch (error) {
-      console.error('Delete error:', error);
-    } finally {
-      setIsDeleting(false);
+      onSuccess('Sale returned successfully');
+      refreshSales();
+    } catch (e) {
+      console.error(e);
+      onSuccess('Failed to return sale');
     }
   };
-
-  const handlePrintReceipt = useReactToPrint({
-    contentRef: receiptRef,
-    documentTitle: 'Sale_Receipt',
-  });
 
   const printReceipt = async () => {
     if (window.electronAPI && window.electronAPI.printReceipt && receiptRef.current) {
@@ -608,9 +467,11 @@ export default function Sales() {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 pb-2">
-        <h1 className="text-2xl sm:text-3xl font-bold text-slate-900 tracking-tight">Sales Management</h1>
-        <div className="flex items-center gap-3 shrink-0 mt-2 md:mt-0">
+      <PageHeader 
+        icon={ShoppingCart}
+        title="Sales Management"
+        description="Review transaction history, print receipts, and manage customer sales."
+        action={
           <GlobalButton
             icon={Printer}
             onClick={printSalesReport}
@@ -618,24 +479,26 @@ export default function Sales() {
           >
             Print Sales Report
           </GlobalButton>
-        </div>
-      </div>
+        }
+      />
 
       <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-2">
-        <div className="rounded-xl border border-slate-200 border-l-4 border-l-blue-500 bg-white p-5 shadow-sm flex flex-col justify-between hover:-translate-y-0.5 hover:shadow-card-hover transition-all duration-200">
-          <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Total Sales</p>
-          <div className="mt-3">
-            <p className="text-2xl font-bold text-slate-900">{stats.totalSales.toString()}</p>
-            <p className="text-[11px] font-medium text-slate-500 mt-1">Recorded sale transactions</p>
-          </div>
-        </div>
-        <div className="rounded-xl border border-slate-200 border-l-4 border-l-blue-500 bg-white p-5 shadow-sm flex flex-col justify-between hover:-translate-y-0.5 hover:shadow-card-hover transition-all duration-200">
-          <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Total Revenue</p>
-          <div className="mt-3">
-            <p className="text-2xl font-bold text-slate-900">{formatCurrency(stats.totalRevenue, currency)}</p>
-            <p className="text-[11px] font-medium text-slate-500 mt-1">Total value of all sales</p>
-          </div>
-        </div>
+        <StatsCard 
+          title="Total Sales" 
+          value={stats.totalSales.toString()} 
+          description="Recorded sale transactions" 
+          color="blue" 
+          icon={ShoppingCart} 
+          arrow="forward"
+        />
+        <StatsCard 
+          title="Total Revenue" 
+          value={formatCurrency(stats.totalRevenue, currency)} 
+          description="Total value of all sales" 
+          color="emerald" 
+          icon={CheckCircle} 
+          arrow="forward"
+        />
       </div>
 
       <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
@@ -726,7 +589,7 @@ export default function Sales() {
 
           return (
             <div className="mt-2">
-              <GlobalTable
+              <GlobalTable onLoadMore={() => setPageIndex(p => p + 1)} hasMore={visibleData.length < totalCount}
                 data={visibleData}
                 columns={tableColumns}
                 renderRow={(sale, virtualIndex, measureRef) => {
@@ -801,54 +664,7 @@ export default function Sales() {
                 }
               />
               
-              <div className="mt-4 flex flex-col sm:flex-row items-center justify-between gap-4 pt-4 border-t border-slate-200">
-                <div className="flex items-center gap-4 text-xs text-slate-500">
-                  <div>
-                    Showing <span className="font-bold text-slate-700">{startItem}</span> to <span className="font-bold text-slate-700">{endItem}</span> of <span className="font-bold text-slate-700">{totalCount || 0}</span> items
-                  </div>
-                  <div className="h-3 w-px bg-slate-200"></div>
-                  <div className="flex items-center gap-2">
-                    <span>Rows:</span>
-                    <RowsDropdown limit={limit} setLimit={setLimit} />
-                  </div>
-                  {isLoading && <span className="ml-2 animate-pulse text-blue-500">Loading...</span>}
-                </div>
-
-                <div className="flex items-center rounded-lg border border-slate-200 bg-white p-1 shadow-sm text-sm font-medium text-slate-600">
-                  <button 
-                    onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
-                    disabled={currentPage === 1}
-                    className={`flex h-7 w-7 items-center justify-center rounded ${currentPage === 1 ? 'text-slate-300 cursor-not-allowed' : 'text-slate-600 hover:bg-slate-50 hover:text-blue-600'}`}
-                  >
-                    <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" /></svg>
-                  </button>
-                  
-                  {getPageNumbers().map((pageNum, idx) => (
-                    <button
-                      key={idx}
-                      disabled={pageNum === '...'}
-                      onClick={() => typeof pageNum === 'number' && setCurrentPage(pageNum)}
-                      className={`flex h-7 w-7 items-center justify-center rounded ${
-                        pageNum === '...' 
-                          ? 'text-slate-400 cursor-default' 
-                          : pageNum === currentPage 
-                            ? 'bg-blue-50 text-blue-600' 
-                            : 'hover:bg-slate-50'
-                      }`}
-                    >
-                      {pageNum}
-                    </button>
-                  ))}
-
-                  <button 
-                    onClick={() => setCurrentPage(prev => Math.min(totalPages, prev + 1))}
-                    disabled={currentPage === totalPages}
-                    className={`flex h-7 w-7 items-center justify-center rounded ${currentPage === totalPages ? 'text-slate-300 cursor-not-allowed' : 'text-slate-600 hover:bg-slate-50 hover:text-blue-600'}`}
-                  >
-                    <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
-                  </button>
-                </div>
-              </div>
+              
             </div>
           );
         }, [visibleData, currentPage, limit, totalCount, isLoading, isAllSalesSelected, selectedSalesIds])}
@@ -1227,7 +1043,7 @@ export default function Sales() {
 
       <BulkDeleteBar
         selectedCount={selectedSalesCount}
-        onDelete={deleteSelectedSales}
+        onDelete={() => setConfirmBulkDelete(true)}
         onCancel={clearSalesSelection}
         itemLabel="sale"
         isDeleting={isDeleting}

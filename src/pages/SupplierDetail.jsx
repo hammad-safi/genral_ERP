@@ -3,8 +3,10 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { Plus, Printer, Phone, ArrowLeft } from 'lucide-react';
 import { useReactToPrint } from 'react-to-print';
 import PageHeader from '@/components/PageHeader';
-import { initDB, getDB } from '@/lib/db';
-import { clearPaginationCache } from '@/hooks/useDexiePagination';
+import GlobalTable from '@/components/GlobalTable';
+import GlobalSearch from '@/components/GlobalSearch';
+import { useDebounce } from '@/hooks/useDebounce';
+import { clearPaginationCache } from '@/hooks/useApiPagination';
 import { formatCurrency, formatDate, removeLeadingZeros } from '@/lib/utils';
 import { useSettings } from '@/hooks/useSettings';
 import { useBusiness } from '@/contexts/BusinessContext';
@@ -19,6 +21,8 @@ export default function SupplierDetail() {
   const [balance, setBalance] = useState({ totalCharged: 0, totalPaid: 0, balance: 0 });
   const [chargeModalOpen, setChargeModalOpen] = useState(false);
   const [paymentModalOpen, setPaymentModalOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const debouncedSearchQuery = useDebounce(searchQuery, 300);
   const settings = useSettings();
   const currency = settings?.currency ?? 'Rs';
   const printRef = useRef(null);
@@ -33,32 +37,30 @@ export default function SupplierDetail() {
   }, [supplierId]);
 
   const loadSupplierData = async () => {
-    await initDB();
-    const currentDB = getDB();
+    try {
+      const [supRes, ledgRes] = await Promise.all([
+        fetch('/api/suppliers/' + supplierId),
+        fetch('/api/suppliers/' + supplierId + '/ledger')
+      ]);
+      const supplierData = await supRes.json();
+      const ledgerData = await ledgRes.json();
 
-    const supplierData = await currentDB.suppliers.get(supplierId);
-    if (!supplierData) return;
+      if (!supplierData || !supplierData.id) return;
 
-    const ledgerData = await currentDB.supplierLedger
-      .where('supplierId').equals(supplierId)
-      .sortBy('date');
+      setSupplier(supplierData);
+      setLedger(ledgerData);
 
-    setSupplier(supplierData);
-    setLedger(ledgerData);
+      const totalCharged = ledgerData.reduce((sum, e) => sum + Number(e.credit || 0), 0);
+      const totalPaid = ledgerData.reduce((sum, e) => sum + Number(e.debit || 0), 0);
 
-    const totalCharged = ledgerData
-      .filter(e => e.type === 'charge' || e.type === 'purchase')
-      .reduce((sum, e) => sum + e.amount, 0);
-
-    const totalPaid = ledgerData
-      .filter(e => e.type === 'payment' || e.type === 'payment_reversal')
-      .reduce((sum, e) => sum + e.amount, 0);
-
-    setBalance({
-      totalCharged,
-      totalPaid,
-      balance: totalCharged - totalPaid
-    });
+      setBalance({
+        totalCharged,
+        totalPaid,
+        balance: totalCharged - totalPaid
+      });
+    } catch(err) {
+      console.error(err);
+    }
   };
 
   if (!supplier) {
@@ -144,41 +146,32 @@ export default function SupplierDetail() {
       <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6">
         <h3 className="text-lg font-semibold mb-4 text-slate-900">📋 Transaction History</h3>
 
-        <div className="overflow-x-auto overflow-y-auto max-h-[58vh] rounded-xl border border-slate-200">
-          <table className="w-full">
-            <thead>
-              <tr className="border-b border-slate-200 bg-slate-50">
-                <th className="text-left py-2 text-slate-900">Date</th>
-                <th className="text-left py-2 text-slate-900">Description</th>
-                <th className="text-right py-2 text-slate-900">DR</th>
-                <th className="text-right py-2 text-slate-900">CR</th>
-              </tr>
-            </thead>
-            <tbody>
-              {ledger.map((entry) => (
-                <tr key={entry.id} className="border-b border-slate-200 hover:bg-slate-50">
-                  <td className="py-2 text-slate-900">{formatDate(entry.date)}</td>
-                  <td className="py-2 text-slate-900">{entry.description}</td>
-                  <td className="text-right py-2 text-slate-900">
-                    {entry.type !== 'payment' ? formatCurrency(entry.amount, currency) : ''}
-                  </td>
-                  <td className="text-right py-2 text-slate-900">
-                    {entry.type === 'payment' ? formatCurrency(entry.amount, currency) : ''}
-                  </td>
-                </tr>
-              ))}
-              <tr className="bg-yellow-50 font-bold">
-                <td colSpan={2} className="py-3 text-center text-slate-900">BALANCE REMAINING</td>
-                <td colSpan={2} className="text-right py-3 text-slate-900">
-                  {formatCurrency(balance.balance, currency)}
-                </td>
-              </tr>
-            </tbody>
-          </table>
+        
+        <div className="flex justify-between items-center mb-4">
+          <GlobalSearch
+            value={searchQuery}
+            onChange={setSearchQuery}
+            placeholder="Search transactions..."
+          />
         </div>
-      </div>
+        <GlobalTable
+          hasMore={false}
+          data={ledger.filter(entry => entry.description?.toLowerCase().includes(debouncedSearchQuery.toLowerCase()))}
+          columns={[
+            { header: 'Date', key: 'date', render: (val) => formatDate(val) },
+            { header: 'Description', key: 'description' },
+            { header: `DR (${currency})`, key: 'debit', render: (val, entry) => Number(entry.debit) !== 0 ? Number(entry.debit).toFixed(2) : '' },
+            { header: `CR (${currency})`, key: 'credit', render: (val, entry) => Number(entry.credit) !== 0 ? Number(entry.credit).toFixed(2) : '' },
+          ]}
+          emptyState={<div className="p-8 text-center text-slate-500">No transactions found</div>}
+        />
+        <div className="bg-yellow-100 font-bold text-lg p-4 flex justify-between items-center rounded-b-xl border-x border-b border-slate-200 -mt-[1px] relative z-10">
+          <div>BALANCE REMAINING</div>
+          <div className="text-right pr-4">{currency} {balance.balance.toFixed(2)}</div>
+              </div>
+    </div>
 
-      <div className="flex gap-4 flex-wrap">
+    <div className="flex gap-4 flex-wrap">
         <button
           onClick={() => setChargeModalOpen(true)}
           className="bg-red-600 text-white px-4 py-2 rounded-lg hover:bg-red-700 inline-flex items-center gap-2"
@@ -260,10 +253,10 @@ export default function SupplierDetail() {
                 <td className="border p-2">{formatDate(entry.date)}</td>
                 <td className="border p-2">{entry.description}</td>
                 <td className="border p-2 text-right">
-                  {entry.type !== 'payment' ? entry.amount.toFixed(2) : ''}
+                  {Number(entry.credit) > 0 ? Number(entry.credit).toFixed(2) : ''}
                 </td>
                 <td className="border p-2 text-right">
-                  {entry.type === 'payment' ? entry.amount.toFixed(2) : ''}
+                  {Number(entry.debit) > 0 ? Number(entry.debit).toFixed(2) : ''}
                 </td>
               </tr>
             ))}
@@ -292,13 +285,15 @@ function ChargeModal({ supplierId, onClose, onSave }) {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    const currentDB = getDB();
-    await currentDB.supplierLedger.add({
-      supplierId,
-      type: 'charge',
-      amount: Number(amount),
-      description: description || 'Purchase',
-      date: new Date().toISOString()
+    await fetch('/api/suppliers/' + supplierId + '/ledger', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        type: 'charge',
+        amount: Number(amount),
+        description: description || 'Purchase',
+        date: new Date().toISOString()
+      })
     });
     onSave();
   };
@@ -365,13 +360,15 @@ function PaymentModal({ supplierId, onClose, onSave }) {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    const currentDB = getDB();
-    await currentDB.supplierLedger.add({
-      supplierId,
-      type: 'payment',
-      amount: Number(amount),
-      description: note || 'Payment received',
-      date: new Date().toISOString()
+    await fetch('/api/suppliers/' + supplierId + '/ledger', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        type: 'payment',
+        amount: Number(amount),
+        description: description || 'Payment Given',
+        date: new Date().toISOString()
+      })
     });
     onSave();
   };
@@ -428,5 +425,6 @@ function PaymentModal({ supplierId, onClose, onSave }) {
     </div>
   );
 }
+
 
 
