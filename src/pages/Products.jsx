@@ -883,7 +883,19 @@ export default function Products() {
 
   const [limit, setLimit] = useState(25);
 
-  const { data: visibleData, totalItems: totalCount, loading: isLoading, refresh, setPageIndex, pageIndex, totalPages, summary } = useApiPagination({
+  const { 
+    data: visibleData, 
+    totalItems: totalCount, 
+    loading: isLoading, 
+    refresh, 
+    setPageIndex, 
+    pageIndex, 
+    totalPages, 
+    summary,
+    optimisticInsert,
+    optimisticUpdate,
+    optimisticDelete
+  } = useApiPagination({
     endpoint: `/api/products?category=${categoryFilter !== 'All' ? categoryFilter : ''}&stock=${stockFilter}&expiry=${expiryFilter}`,
     pageSize: limit,
     search: debouncedSearch,
@@ -917,24 +929,20 @@ export default function Products() {
   const removeProduct = async () => {
     if (!selectedProduct?.id) return;
     const idToDelete = selectedProduct.id;
-    try {
-      await api.deleteProduct(idToDelete);
-      
-    } catch (error) {
-      console.error('Error deleting product:', error);
-      return;
-    }
-
-    // Update state via refresh
-    clearPaginationCache('products');
-    clearPaginationCache('inventory');
-    refresh();
+    optimisticDelete(idToDelete);
     setConfirmDelete(false);
     setSelectedProduct(null);
     modalRef.current?.close();
 
-    // Force repaint after React DOM updates complete
-    forceRepaintAfterRender();
+    try {
+      await api.deleteProduct(idToDelete);
+      clearPaginationCache('products');
+      clearPaginationCache('inventory');
+    } catch (error) {
+      console.error('Error deleting product:', error);
+    } finally {
+      forceRepaintAfterRender();
+    }
   };
 
   // Toggle single product selection
@@ -1358,9 +1366,14 @@ export default function Products() {
           setIsFormOpen(false);
           setSelectedProductForForm(null);
         }}
-        onSuccess={async (mode, productData) => {
+        onSuccess={(mode, productData) => {
           setIsFormOpen(false);
           setSelectedProductForForm(null);
+          if (mode === 'add') {
+            optimisticInsert(productData);
+          } else {
+            optimisticUpdate(productData);
+          }
           clearPaginationCache('products');
           clearPaginationCache('inventory');
           refresh(true);

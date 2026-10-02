@@ -15,8 +15,19 @@ const isRemoteDb = connectionString.includes('supabase') || connectionString.inc
 
 const pool = new Pool({
   connectionString,
-  ssl: isRemoteDb ? { rejectUnauthorized: false } : false
+  ssl: isRemoteDb ? { rejectUnauthorized: false } : false,
+  min: 4,
+  max: 20,
+  idleTimeoutMillis: 300000,
+  connectionTimeoutMillis: 10000,
+  keepAlive: true,
+  keepAliveInitialDelayMillis: 10000
 });
+
+// Periodic pool heartbeat to keep connections pre-warmed against remote provider idle timeouts
+setInterval(() => {
+  pool.query('SELECT 1').catch(() => {});
+}, 30000);
 
 // Since we couldn't push schema with Prisma, we need to create the tables manually if they don't exist!
 async function initDB() {
@@ -189,6 +200,17 @@ async function initDB() {
         "refId" INTEGER,
         "createdAt" TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
       );
+      CREATE INDEX IF NOT EXISTS "idx_sale_date" ON "Sale"("date" DESC);
+      CREATE INDEX IF NOT EXISTS "idx_sale_customer_id" ON "Sale"("customerId");
+      CREATE INDEX IF NOT EXISTS "idx_purchase_date" ON "Purchase"("date" DESC);
+      CREATE INDEX IF NOT EXISTS "idx_purchase_supplier_id" ON "Purchase"("supplierId");
+      CREATE INDEX IF NOT EXISTS "idx_customer_ledger_cust_date" ON "CustomerLedger"("customerId", "date");
+      CREATE INDEX IF NOT EXISTS "idx_supplier_ledger_supp_date" ON "SupplierLedger"("supplierId", "date");
+      CREATE INDEX IF NOT EXISTS "idx_expense_date" ON "Expense"("date");
+      CREATE INDEX IF NOT EXISTS "idx_product_batch_prod_id" ON "ProductBatch"("productId");
+      CREATE INDEX IF NOT EXISTS "idx_price_history_prod_id" ON "PriceHistory"("productId");
+      CREATE INDEX IF NOT EXISTS "idx_customer_name" ON "Customer"("name");
+      CREATE INDEX IF NOT EXISTS "idx_supplier_name" ON "Supplier"("name");
     `);
     console.log("PostgreSQL tables verified.");
     const { rowCount: roleCount } = await pool.query('SELECT id FROM "Role" WHERE name = \'Admin\'');
@@ -228,9 +250,22 @@ const calculateNetProfit = (sales, products, expenses) => {
   return totalRevenue - totalCOGS - totalExpenses;
 };
 
+let dashboardMetricsCache = null;
+let dashboardMetricsCacheTime = 0;
+const DASHBOARD_CACHE_TTL = 30000; // 30 seconds
+
+function invalidateDashboardCache() {
+  dashboardMetricsCache = null;
+  dashboardMetricsCacheTime = 0;
+}
+
 // --- METRICS ---
 app.get('/api/metrics/dashboard', async (req, res) => {
   try {
+    if (req.query.force !== 'true' && dashboardMetricsCache && (Date.now() - dashboardMetricsCacheTime < DASHBOARD_CACHE_TTL)) {
+      return res.json(dashboardMetricsCache);
+    }
+
     const [
       { rows: todaySalesRows },
       { rows: monthSalesRows },
@@ -287,11 +322,15 @@ app.get('/api/metrics/dashboard', async (req, res) => {
       pool.query(`
         SELECT 
           (i->>'productId')::int as "productId",
+          COALESCE(p.name, 'Unknown') as name,
+          COALESCE(p.price, 0) as price,
+          COALESCE(p.category, 'Unknown') as category,
           SUM(COALESCE((i->>'qty')::numeric, (i->>'quantity')::numeric, 0)) as quantity,
           SUM(COALESCE((i->>'subtotal')::numeric, 0)) as revenue
         FROM "Sale" s
         CROSS JOIN jsonb_array_elements(CASE WHEN "items" IS NULL OR "items"::text = '""' THEN '[]'::jsonb ELSE "items" END) as i
-        GROUP BY (i->>'productId')::int
+        LEFT JOIN "Product" p ON (i->>'productId')::int = p.id
+        GROUP BY (i->>'productId')::int, p.name, p.price, p.category
         ORDER BY quantity DESC
         LIMIT 5
       `),
@@ -380,18 +419,14 @@ app.get('/api/metrics/dashboard', async (req, res) => {
       fill: bizCategoryColors[row.category] || palette[index % palette.length]
     }));
 
-    // Top Selling Products
-    const topSellingProducts = [];
-    for (const row of topSellingRows) {
-      const { rows: prod } = await pool.query('SELECT name, price, category FROM "Product" WHERE id = $1', [row.productId]);
-      topSellingProducts.push({
-        name: prod[0]?.name || 'Unknown',
-        price: prod[0]?.price || 0,
-        category: prod[0]?.category || 'Unknown',
-        quantity: Number(row.quantity),
-        revenue: Number(row.revenue)
-      });
-    }
+    // Top Selling Products - already joined from DB
+    const topSellingProducts = topSellingRows.map(row => ({
+      name: row.name || 'Unknown',
+      price: Number(row.price || 0),
+      category: row.category || 'Unknown',
+      quantity: Number(row.quantity || 0),
+      revenue: Number(row.revenue || 0)
+    }));
 
     // Recent Transactions
     const recentTransactions = [...recentSales, ...recentPurchases]
@@ -399,7 +434,7 @@ app.get('/api/metrics/dashboard', async (req, res) => {
       .slice(0, 5)
       .map(t => ({ ...t, amount: Number(t.amount) }));
 
-    res.json({
+    const payload = {
       todaySalesTotal, todaySalesCount,
       thisMonthSalesTotal, thisMonthSalesCount,
       thisMonthPurchasesTotal, thisMonthPurchasesCount,
@@ -414,7 +449,12 @@ app.get('/api/metrics/dashboard', async (req, res) => {
       totalPeopleBalance, peopleWithBalance,
       totalSupplierBalance, suppliersWithBalance,
       topSellingProducts
-    });
+    };
+
+    dashboardMetricsCache = payload;
+    dashboardMetricsCacheTime = Date.now();
+
+    res.json(payload);
   } catch (error) { 
     { require('fs').appendFileSync('backend_error.log', new Date().toISOString() + ' ' + error.stack + '\n'); res.status(500).json({ error: error.message }); }
   }
@@ -740,6 +780,7 @@ app.post('/api/products', async (req, res) => {
       lowStockThreshold
     ]);
 
+    invalidateDashboardCache();
     res.status(201).json(rows[0]);
   } catch (error) { 
     if (error.code === '23505') {
@@ -827,17 +868,15 @@ app.delete('/api/products/:id', async (req, res) => {
 // --- INVENTORY ---
 app.get('/api/inventory/stats', async (req, res) => {
   try {
-    const { rows } = await pool.query('SELECT quantity, "lowStockThreshold" FROM "Inventory"');
-    let total = rows.length;
-    let healthy = 0;
-    let low = 0;
-    let out = 0;
-    for (const r of rows) {
-      if (r.quantity <= 0) out++;
-      else if (r.quantity <= (r.lowStockThreshold || 10)) low++;
-      else healthy++;
-    }
-    res.json({ total, healthy, low, out });
+    const { rows } = await pool.query(`
+      SELECT 
+        COUNT(*)::int as total,
+        COUNT(*) FILTER (WHERE quantity > COALESCE("lowStockThreshold", 10))::int as healthy,
+        COUNT(*) FILTER (WHERE quantity > 0 AND quantity <= COALESCE("lowStockThreshold", 10))::int as low,
+        COUNT(*) FILTER (WHERE quantity <= 0)::int as out
+      FROM "Inventory"
+    `);
+    res.json(rows[0] || { total: 0, healthy: 0, low: 0, out: 0 });
   } catch (error) { 
     if (error.code === '23505') {
       res.status(400).json({ error: 'Username already exists' });
@@ -896,10 +935,11 @@ app.get('/api/inventory', async (req, res) => {
       LIMIT $${paramIndex} OFFSET $${paramIndex + 1}
     `;
     
-    const { rows: countRows } = await pool.query(countQuery, params);
-    
-    params.push(limit, page * limit);
-    const { rows } = await pool.query(dataQuery, params);
+    const dataParams = [...params, limit, page * limit];
+    const [{ rows: countRows }, { rows }] = await Promise.all([
+      pool.query(countQuery, params),
+      pool.query(dataQuery, dataParams)
+    ]);
     
     // Add expiryStatus string similar to what dexie transformChunk did
     const today = new Date();
@@ -1190,10 +1230,7 @@ app.get('/api/customers', async (req, res) => {
     
     query += ' ORDER BY c.id DESC LIMIT ' + limit + ' OFFSET ' + offset;
 
-    const { rows: data } = await pool.query(query, params);
-    const { rows: countRes } = await pool.query(countQuery, params);
-
-    const { rows: statsRes } = await pool.query(`
+    const statsQuery = `
       SELECT 
         COUNT(*)::int as "totalCount",
         COALESCE(SUM(
@@ -1208,7 +1245,13 @@ app.get('/api/customers', async (req, res) => {
         ), 0)::float as "totalOwed",
         COALESCE((SELECT SUM(credit) FROM "CustomerLedger"), 0)::float as "totalPaid"
       FROM "Customer" c
-    `);
+    `;
+
+    const [{ rows: data }, { rows: countRes }, { rows: statsRes }] = await Promise.all([
+      pool.query(query, params),
+      pool.query(countQuery, params),
+      pool.query(statsQuery)
+    ]);
     
     res.json({ 
       data, 
@@ -1366,47 +1409,62 @@ app.post('/api/purchases', async (req, res) => {
       );
     }
     
-    // Loop Items
-    for (const item of items) {
-      // Batch
-      await client.query(
-        'INSERT INTO "ProductBatch" ("batchNumber", "productId", "quantity", "costPrice", "expiryDate") VALUES ($1, $2, $3, $4, $5)',
-        [item.batchNumber, item.productId, item.quantity, item.costPrice, item.expiryDate || null]
-      );
-      
-      // Price History & WAC
-      const { rows: histRows } = await client.query('SELECT quantity, "purchasePrice" FROM "PriceHistory" WHERE "productId" = $1 AND type = \'purchase\'', [item.productId]);
-      const totalCostAmt = histRows.reduce((sum, h) => sum + ((h.purchasePrice || 0) * (h.quantity || 1)), 0) + item.totalCost;
-      const totalQty = histRows.reduce((sum, h) => sum + (h.quantity || 1), 0) + item.quantity;
-      const wac = totalQty > 0 ? totalCostAmt / totalQty : 0;
-      
-      await client.query('UPDATE "Product" SET "costPrice" = $1 WHERE id = $2', [wac, item.productId]);
-      if (item.expiryDate) {
-        await client.query('UPDATE "Product" SET "expiryDate" = $1 WHERE id = $2', [item.expiryDate, item.productId]);
+    // Batched Items Processing
+    const validItems = (items || []).filter(item => item && item.productId);
+    if (validItems.length > 0) {
+      // 1. Batch ProductBatch
+      const batchNumbers = validItems.map(i => i.batchNumber || `B-${Date.now()}`);
+      const prodIds = validItems.map(i => parseInt(i.productId));
+      const quantities = validItems.map(i => parseInt(i.quantity || 0));
+      const costPrices = validItems.map(i => parseFloat(i.costPrice || 0));
+      const expiryDates = validItems.map(i => i.expiryDate || null);
+
+      await client.query(`
+        INSERT INTO "ProductBatch" ("batchNumber", "productId", "quantity", "costPrice", "expiryDate")
+        SELECT unnest($1::text[]), unnest($2::int[]), unnest($3::int[]), unnest($4::numeric[]), unnest($5::text[])
+      `, [batchNumbers, prodIds, quantities, costPrices, expiryDates]);
+
+      // 2. Batch Update Inventory
+      const invUpdateRes = await client.query(`
+        UPDATE "Inventory" AS i
+        SET quantity = i.quantity + u.qty,
+            "lastUpdated" = CURRENT_TIMESTAMP,
+            "expiryDate" = COALESCE(u.exp, i."expiryDate")
+        FROM (
+          SELECT unnest($1::int[]) AS prod_id, unnest($2::int[]) AS qty, unnest($3::text[]) AS exp
+        ) AS u
+        WHERE i."productId" = u.prod_id
+        RETURNING i."productId";
+      `, [prodIds, quantities, expiryDates]);
+
+      const updatedSet = new Set(invUpdateRes.rows.map(r => r.productId));
+      const missingItems = validItems.filter(i => !updatedSet.has(parseInt(i.productId)));
+      if (missingItems.length > 0) {
+        for (const m of missingItems) {
+          await client.query(
+            'INSERT INTO "Inventory" ("productId", quantity, "lowStockThreshold", "expiryDate") VALUES ($1, $2, $3, $4)',
+            [m.productId, m.quantity, 10, m.expiryDate || null]
+          );
+        }
       }
-      
-      await client.query(
-        'INSERT INTO "PriceHistory" ("productId", "type", "purchasePrice", "wac", "date", "quantity", "supplier") VALUES ($1, $2, $3, $4, $5, $6, $7)',
-        [item.productId, 'purchase', item.costPrice, wac, date, item.quantity, supplierName || null]
-      );
-      
-      // Inventory
-      const { rows: invRows } = await client.query('SELECT id, quantity, "expiryDate" FROM "Inventory" WHERE "productId" = $1 LIMIT 1', [item.productId]);
-      if (invRows.length > 0) {
-        const inv = invRows[0];
+
+      // 3. Price History & WAC
+      for (const item of validItems) {
+        const { rows: histRows } = await client.query('SELECT quantity, "purchasePrice" FROM "PriceHistory" WHERE "productId" = $1 AND type = \'purchase\'', [item.productId]);
+        const totalCostAmt = histRows.reduce((sum, h) => sum + ((h.purchasePrice || 0) * (h.quantity || 1)), 0) + (item.totalCost || (item.costPrice * item.quantity));
+        const totalQty = histRows.reduce((sum, h) => sum + (h.quantity || 1), 0) + item.quantity;
+        const wac = totalQty > 0 ? totalCostAmt / totalQty : (item.costPrice || 0);
+
+        await client.query('UPDATE "Product" SET "costPrice" = $1, "expiryDate" = COALESCE($2, "expiryDate") WHERE id = $3', [wac, item.expiryDate || null, item.productId]);
         await client.query(
-          'UPDATE "Inventory" SET quantity = $1, "lastUpdated" = $2, "expiryDate" = COALESCE($3, "expiryDate") WHERE id = $4',
-          [inv.quantity + item.quantity, new Date().toISOString(), item.expiryDate || null, inv.id]
-        );
-      } else {
-        await client.query(
-          'INSERT INTO "Inventory" ("productId", "quantity", "lowStockThreshold", "expiryDate") VALUES ($1, $2, $3, $4)',
-          [item.productId, item.quantity, 10, item.expiryDate || null]
+          'INSERT INTO "PriceHistory" ("productId", "type", "purchasePrice", "wac", "date", "quantity", "supplier") VALUES ($1, $2, $3, $4, $5, $6, $7)',
+          [item.productId, 'purchase', item.costPrice, wac, date, item.quantity, supplierName || null]
         );
       }
     }
     
     await client.query('COMMIT');
+    invalidateDashboardCache();
     res.status(201).json(purchase);
   } catch (error) {
     await client.query('ROLLBACK');
@@ -1490,44 +1548,7 @@ app.delete('/api/purchases/:id', async (req, res) => {
   }
 });
 
-app.get('/api/purchases', async (req, res) => {
-  try {
-    const limit = parseInt(req.query.limit) || 10;
-    const page = parseInt(req.query.page) || 1;
-    const search = req.query.search || '';
-    const offset = (page - 1) * limit;
 
-    let query = 'SELECT * FROM "Purchase"';
-    let countQuery = 'SELECT COUNT(*) as total FROM "Purchase"';
-    const params = [];
-    
-    if (search) {
-      params.push('%' + search + '%');
-      const searchClause = ' WHERE ("supplierName" ILIKE $1 OR date ILIKE $1 OR id::text ILIKE $1)';
-      query += searchClause;
-      countQuery += searchClause;
-    }
-    
-    query += ' ORDER BY id DESC LIMIT ' + limit + ' OFFSET ' + offset;
-
-    const { rows: purchases } = await pool.query(query, params);
-    const { rows: countRes } = await pool.query(countQuery, params);
-    
-    // Add purchaseNumber for backwards compatibility
-    const dataWithNumbers = purchases.map(p => ({
-      ...p,
-      purchaseNumber: 'PUR-' + String(p.id).padStart(4, '0')
-    }));
-
-    res.json({ data: dataWithNumbers, total: Math.max(0, parseInt(countRes[0].total)) });
-  } catch (error) { 
-    if (error.code === '23505') {
-      res.status(400).json({ error: 'Username already exists' });
-    } else {
-      { require('fs').appendFileSync('backend_error.log', new Date().toISOString() + ' ' + error.stack + '\n'); res.status(500).json({ error: error.message }); }
-    }
-  }
-});
 
 
 app.post('/api/batches', async (req, res) => {
@@ -1694,9 +1715,7 @@ app.get('/api/suppliers', async (req, res) => {
 
     query += ' GROUP BY s.id ORDER BY s.id DESC LIMIT ' + limit + ' OFFSET ' + offset;
 
-    const { rows: data } = await pool.query(query, params);
-    const { rows: countRes } = await pool.query(countQuery, params);
-    const { rows: statsRes } = await pool.query(`
+    const statsQuery = `
       SELECT 
         COUNT(*)::int as "totalCount",
         COALESCE(SUM(
@@ -1711,7 +1730,13 @@ app.get('/api/suppliers', async (req, res) => {
         ), 0)::float as "totalOwed",
         COALESCE((SELECT SUM(debit) FROM "SupplierLedger"), 0)::float as "totalPaid"
       FROM "Supplier" s
-    `);
+    `;
+
+    const [{ rows: data }, { rows: countRes }, { rows: statsRes }] = await Promise.all([
+      pool.query(query, params),
+      pool.query(countQuery, params),
+      pool.query(statsQuery)
+    ]);
 
     res.json({ 
       data, 
@@ -1760,16 +1785,24 @@ app.get('/api/purchases', async (req, res) => {
 
     query += ' ORDER BY id DESC LIMIT ' + limit + ' OFFSET ' + offset;
 
-    const { rows: purchases } = await pool.query(query, params);
-    const { rows: countRes } = await pool.query(countQuery, params);
+    const [purchasesRes, countRes, sumRes] = await Promise.all([
+      pool.query(query, params),
+      pool.query(countQuery, params),
+      pool.query('SELECT COUNT(*) as "totalCount", COALESCE(SUM("totalAmount"), 0) as "totalAmount" FROM "Purchase"')
+    ]);
     
     // Add purchaseNumber for backwards compatibility
-    const dataWithNumbers = purchases.map(p => ({
+    const dataWithNumbers = purchasesRes.rows.map(p => ({
       ...p,
       purchaseNumber: 'PUR-' + String(p.id).padStart(4, '0')
     }));
 
-    res.json({ data: dataWithNumbers, total: Math.max(0, parseInt(countRes[0].total)) });
+    const total = Math.max(0, parseInt(countRes.rows[0]?.total || 0));
+    res.json({ 
+      data: dataWithNumbers, 
+      total,
+      summary: sumRes.rows[0] || { totalCount: total, totalAmount: 0 }
+    });
   } catch (error) { 
     if (error.code === '23505') {
       res.status(400).json({ error: 'Username already exists' });
@@ -2023,10 +2056,20 @@ app.get('/api/sales', async (req, res) => {
 
     query += ' ORDER BY id DESC LIMIT ' + limit + ' OFFSET ' + offset;
 
-    const { rows: data } = await pool.query(query, params);
-    const { rows: countRes } = await pool.query(countQuery, params);
+    const [dataRes, countRes, sumRes] = await Promise.all([
+      pool.query(query, params),
+      pool.query(countQuery, params),
+      pool.query('SELECT COUNT(*) as "totalCount", COALESCE(SUM("totalAmount"), 0) as "totalAmount" FROM "Sale"')
+    ]);
 
-    res.json({ data, total: Math.max(0, parseInt(countRes[0].total)), page, totalPages: Math.ceil(Math.max(0, parseInt(countRes[0].total)) / limit) });
+    const total = Math.max(0, parseInt(countRes.rows[0]?.total || 0));
+    res.json({ 
+      data: dataRes.rows, 
+      total, 
+      summary: sumRes.rows[0] || { totalCount: total, totalAmount: 0 },
+      page, 
+      totalPages: Math.ceil(total / limit) 
+    });
   } catch (error) { 
     if (error.code === '23505') {
       res.status(400).json({ error: 'Username already exists' });
@@ -2049,14 +2092,29 @@ app.post('/api/sales', async (req, res) => {
     );
     const sale = saleRows[0];
     
-    // Insert Items and Update Inventory
-    for (const item of (items || [])) {
-      // Get current inventory
-      const { rows: invRows } = await client.query('SELECT id, quantity FROM "Inventory" WHERE "productId" = $1', [item.productId]);
-      if (invRows.length > 0) {
-        await client.query('UPDATE "Inventory" SET quantity = quantity - $1 WHERE "productId" = $2', [item.quantity || item.qty, item.productId]);
-      } else {
-        await client.query('INSERT INTO "Inventory" ("productId", quantity) VALUES ($1, $2)', [item.productId, -(item.quantity || item.qty)]);
+    // Batched Inventory Update in a single atomic pass
+    const validItems = (items || []).filter(item => item && item.productId);
+    if (validItems.length > 0) {
+      const prodIds = validItems.map(i => parseInt(i.productId));
+      const qtys = validItems.map(i => parseInt(i.quantity || i.qty || 0));
+
+      const updateRes = await client.query(`
+        UPDATE "Inventory" AS i
+        SET quantity = i.quantity - u.qty,
+            "lastUpdated" = CURRENT_TIMESTAMP
+        FROM (
+          SELECT unnest($1::int[]) AS prod_id, unnest($2::int[]) AS qty
+        ) AS u
+        WHERE i."productId" = u.prod_id
+        RETURNING i."productId";
+      `, [prodIds, qtys]);
+
+      const updatedSet = new Set(updateRes.rows.map(r => r.productId));
+      const missingItems = validItems.filter(i => !updatedSet.has(parseInt(i.productId)));
+      if (missingItems.length > 0) {
+        for (const m of missingItems) {
+          await client.query('INSERT INTO "Inventory" ("productId", quantity) VALUES ($1, $2)', [m.productId, -(m.quantity || m.qty || 0)]);
+        }
       }
     }
     
@@ -2084,6 +2142,7 @@ app.post('/api/sales', async (req, res) => {
     }
     
     await client.query('COMMIT');
+    invalidateDashboardCache();
     res.status(201).json(sale);
   } catch (error) { 
     await client.query('ROLLBACK');
@@ -2185,6 +2244,7 @@ app.post('/api/expenses', async (req, res) => {
       'INSERT INTO "Expense" ("date", "amount", "description", "category", "note") VALUES ($1, $2, $3, $4, $5) RETURNING *, COALESCE(description, \'\') as title',
       [date || new Date().toISOString(), parseFloat(amount) || 0, desc, category || 'Other', note || null]
     );
+    invalidateDashboardCache();
     res.status(201).json(rows[0]);
   } catch (error) { 
     { require('fs').appendFileSync('backend_error.log', new Date().toISOString() + ' ' + error.stack + '\n'); res.status(500).json({ error: error.message }); }

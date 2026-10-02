@@ -13,13 +13,36 @@ export const clearPaginationCache = (key) => {
 };
 
 export function useApiPagination({ endpoint, pageSize = 20, dependencies = [], search: externalSearch, mode = 'infinite' }) {
-  const [data, setData] = useState([]);
-  // Initial load is true ONLY if not in cache
-  const [loading, setLoading] = useState(true);
+  // Synchronous cache hit check for 0ms instant mount
+  const getInitialCache = () => {
+    try {
+      const baseUrl = (() => {
+        if (typeof window !== 'undefined') {
+          if (window.location.protocol === 'file:' || window.electronAPI) return 'http://localhost:3001';
+          return window.location.origin;
+        }
+        return 'http://localhost:3001';
+      })();
+      const url = new URL(endpoint, baseUrl);
+      url.searchParams.set('page', 0);
+      url.searchParams.set('limit', pageSize);
+      const searchVal = externalSearch !== undefined ? externalSearch : '';
+      if (searchVal) url.searchParams.set('search', searchVal);
+      const key = url.toString();
+      return globalCache[key] || null;
+    } catch (e) {
+      return null;
+    }
+  };
+
+  const initialCached = getInitialCache();
+
+  const [data, setData] = useState(() => initialCached?.data || []);
+  const [loading, setLoading] = useState(() => !initialCached);
   const [error, setError] = useState(null);
   const [pageIndex, setPageIndex] = useState(0);
-  const [totalItems, setTotalItems] = useState(0);
-  const [summary, setSummary] = useState(null);
+  const [totalItems, setTotalItems] = useState(() => initialCached?.total || 0);
+  const [summary, setSummary] = useState(() => initialCached?.summary || null);
   
   // Support both internal search state and external search prop
   const [internalSearch, setInternalSearch] = useState('');
@@ -50,7 +73,11 @@ export function useApiPagination({ endpoint, pageSize = 20, dependencies = [], s
         return;
       }
 
-      setLoading(true);
+      // If we don't have cached data yet, show loading spinner. If we already have cached data, background validate without spinner (SWR).
+      if (!globalCache[cacheKey]) {
+        setLoading(true);
+      }
+
       const response = await fetch(cacheKey);
       if (!response.ok) throw new Error('Failed to fetch data');
       
@@ -78,7 +105,6 @@ export function useApiPagination({ endpoint, pageSize = 20, dependencies = [], s
     } catch (err) {
       console.error('Pagination Error:', err);
       setError(err.message);
-      setData([]);
     } finally {
       setLoading(false);
     }
@@ -94,6 +120,21 @@ export function useApiPagination({ endpoint, pageSize = 20, dependencies = [], s
 
   const refresh = (force = true) => fetchData(force);
 
+  // Optimistic UI updates
+  const optimisticInsert = useCallback((newItem) => {
+    setData(prev => [newItem, ...prev.filter(x => x.id !== newItem.id)]);
+    setTotalItems(prev => prev + 1);
+  }, []);
+
+  const optimisticUpdate = useCallback((updatedItem) => {
+    setData(prev => prev.map(item => item.id === updatedItem.id ? { ...item, ...updatedItem } : item));
+  }, []);
+
+  const optimisticDelete = useCallback((id) => {
+    setData(prev => prev.filter(item => item.id !== id));
+    setTotalItems(prev => Math.max(0, prev - 1));
+  }, []);
+
   return {
     data,
     loading,
@@ -106,6 +147,9 @@ export function useApiPagination({ endpoint, pageSize = 20, dependencies = [], s
     search,
     setSearch: setInternalSearch,
     summary,
-    refresh
+    refresh,
+    optimisticInsert,
+    optimisticUpdate,
+    optimisticDelete
   };
 }

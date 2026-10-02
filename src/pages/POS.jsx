@@ -84,7 +84,6 @@ export default function POS() {
   const { businessColor } = useBusiness();
   const settings = useSettings();
   const currency = settings?.currency ?? 'Rs';
-  const [inventory, setInventory] = useState([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [cart, setCart] = useState([]);
   const pricingMode = settings?.pricingMode || settings?.defaultPricingMode || 'Retail';
@@ -179,9 +178,7 @@ export default function POS() {
 
   const [categoriesList, setCategoriesList] = useState([]);
   useEffect(() => {
-    api.getProducts().then(() => {}); // just for import check
     fetch(`${API_BASE_URL}/categories`).then(res=>res.json()).then(data=>setCategoriesList(data)).catch(console.error);
-    api.getInventory().then(res => setInventory(res.data || res)).catch(console.error);
 
     const handlePosSearch = (e) => {
       if (e.detail !== undefined) setSearchQuery(e.detail);
@@ -207,7 +204,7 @@ export default function POS() {
     return Array.from(ids).join(',');
   }, [activeCategory, categoriesList]);
 
-  const { data: searchResults, loading: searchLoading, setPageIndex: setSearchPageIndex, totalItems: searchTotalItems } = useApiPagination({
+  const { data: searchResults, loading: searchLoading, setPageIndex: setSearchPageIndex, totalItems: searchTotalItems, refresh: refreshProducts } = useApiPagination({
     endpoint: '/api/products' + (validCategoryIds ? '?category=' + validCategoryIds : ''),
     pageSize: 30,
     search: debouncedSearchQuery,
@@ -265,17 +262,17 @@ export default function POS() {
       ? product.wholesalePrice 
       : product.price;
 
-    const inventoryItem = inventory.find((item) => item.productId === product.id);
-    if (!inventoryItem || inventoryItem.quantity <= 0) {
-      setScanFeedback({ msg: `Î“Â£Ã¹ ${product.name} is out of stock!`, type: 'error' });
+    const availableStock = Number(product.stockQuantity ?? product.quantity ?? 9999);
+    if (availableStock <= 0) {
+      setScanFeedback({ msg: `⚠️ ${product.name} is out of stock!`, type: 'error' });
       setTimeout(() => setScanFeedback(null), 3000);
       return;
     }
 
     const existing = cart.find((item) => item.productId === product.id);
     const nextQty = existing ? existing.qty + 1 : 1;
-    if (nextQty > inventoryItem.quantity) {
-      setScanFeedback({ msg: `Î“Â£Ã¹ Only ${inventoryItem.quantity} in stock for ${product.name}.`, type: 'error' });
+    if (nextQty > availableStock) {
+      setScanFeedback({ msg: `⚠️ Only ${availableStock} in stock for ${product.name}.`, type: 'error' });
       setTimeout(() => setScanFeedback(null), 3000);
       return;
     }
@@ -299,6 +296,7 @@ export default function POS() {
           costPrice: product.costPrice ?? 0,
           subtotal: effectivePrice,
           expiryDate: product.expiryDate || null,
+          maxStock: availableStock,
         },
       ]);
     }
@@ -309,21 +307,20 @@ export default function POS() {
     const barcode = value.trim();
     if (!barcode) return;
 
-    
-    const productsRes = await api.getProducts();
-      const allProds = productsRes.data || productsRes;
-      const product = allProds.find(p => p.barcode === barcode);
+    // Fast check: search in current loaded products first (0ms)
+    let product = (searchResults || []).find(p => p.barcode === barcode);
     if (!product) {
-      setScanFeedback({ msg: `Î“Â£Ã¹ No product found for barcode: ${barcode}`, type: 'error' });
-      setBarcodeValue('');
-      barcodeRef.current?.focus();
-      setTimeout(() => setScanFeedback(null), 3000);
-      return;
+      try {
+        const res = await fetch(`/api/products?search=${encodeURIComponent(barcode)}&limit=1`);
+        const data = await res.json();
+        product = (data.data || data)[0];
+      } catch (err) {
+        console.error('Barcode lookup error:', err);
+      }
     }
 
-    const inventoryItem = null;
-    if (inventoryItem && inventoryItem.quantity <= 0) {
-      setScanFeedback({ msg: `Î“Â£Ã¹ ${product.name} is out of stock!`, type: 'error' });
+    if (!product) {
+      setScanFeedback({ msg: `⚠️ No product found for barcode: ${barcode}`, type: 'error' });
       setBarcodeValue('');
       barcodeRef.current?.focus();
       setTimeout(() => setScanFeedback(null), 3000);
@@ -331,7 +328,7 @@ export default function POS() {
     }
 
     addToCart(product);
-    setScanFeedback({ msg: `Î“Â£Ã´ ${product.name} added to cart!`, type: 'success' });
+    setScanFeedback({ msg: `✅ ${product.name} added to cart!`, type: 'success' });
     setBarcodeValue('');
     barcodeRef.current?.focus();
     setTimeout(() => setScanFeedback(null), 3000);
@@ -359,9 +356,10 @@ export default function POS() {
     const numQty = Number(qty);
     if (isNaN(numQty)) return;
 
-    const inventoryItem = inventory.find((item) => item.productId === productId);
-    if (inventoryItem && numQty > inventoryItem.quantity) {
-      setScanFeedback({ msg: `Î“Â£Ã¹ Cannot exceed stock of ${inventoryItem.quantity}.`, type: 'error' });
+    const existing = cart.find((item) => item.productId === productId);
+    const maxStock = existing?.maxStock ?? 9999;
+    if (numQty > maxStock) {
+      setScanFeedback({ msg: `⚠️ Cannot exceed stock of ${maxStock}.`, type: 'error' });
       setTimeout(() => setScanFeedback(null), 3000);
       return;
     }
@@ -410,33 +408,30 @@ export default function POS() {
       const res = await fetch("/api/sales", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(sale) });
       const savedSale = await res.json();
       const id = savedSale.id || savedSale[0]?.id || Date.now();
-      const invRes = await fetch("/api/inventory").catch(()=>{});
-      const invData = invRes ? await invRes.json().catch(()=>{}) : {};
-      const updatedInventory = invData?.data || [];
-      setInventory(updatedInventory);
-    const prevBal = customerBalance?.balance || 0;
-    const newBal = prevBal + totalAmount - totalPaid;
+      const prevBal = customerBalance?.balance || 0;
+      const newBal = prevBal + totalAmount - totalPaid;
 
-    setReceiptSale({ 
-      ...sale, 
-      id,
-      previousBalance: prevBal,
-      newBalance: newBal
-    });
-    setReceiptCustomer(selectedCustomer);
-    setReceiptAmountPaid(totalPaid);
-    setReceiptOpen(true);
-    setCart([]);
-    setSelectedCustomer(null);
-    setAmountPaying('');
-    setCustomerSearch('');
-    setCustomerBalance(null);
-    setDiscount('');
-    setPaymentMethod('Cash');
-    setIsSplitPayment(false);
-    setSplits([{ method: 'Cash', amount: '' }, { method: 'Card', amount: '' }]);
+      setReceiptSale({ 
+        ...sale, 
+        id,
+        previousBalance: prevBal,
+        newBalance: newBal
+      });
+      setReceiptCustomer(selectedCustomer);
+      setReceiptAmountPaid(totalPaid);
+      setReceiptOpen(true);
+      setCart([]);
+      setSelectedCustomer(null);
+      setAmountPaying('');
+      setCustomerSearch('');
+      setCustomerBalance(null);
+      setDiscount('');
+      setPaymentMethod('Cash');
+      setIsSplitPayment(false);
+      setSplits([{ method: 'Cash', amount: '' }, { method: 'Card', amount: '' }]);
 
-    refreshSales();
+      refreshSales();
+      refreshProducts();
     } catch(e) { console.error(e); }
   };
 
@@ -510,10 +505,10 @@ export default function POS() {
     setIsDeleting(true);
     try {
       await Promise.all(selectedSalesIds.map(id => fetch('/api/sales/' + id, { method: 'DELETE' })));
-      const updatedInventory = await ((await api.getInventory())?.data || []);
-      setInventory(updatedInventory);
       clearSalesSelection();
       forceRepaintAfterRender();
+      refreshSales();
+      refreshProducts();
     } catch (error) {
       console.error('Delete error:', error);
     } finally {
@@ -657,14 +652,13 @@ export default function POS() {
           >
             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 gap-3.5">
               {(searchResults || []).map(product => {
-                const stockItem = inventory.find(i => Number(i.productId) === Number(product.id));
-                const stock = stockItem?.quantity || 0;
+                const stock = Number(product.stockQuantity ?? product.quantity ?? 0);
                 const isOutOfStock = stock <= 0;
                 
                 return (
                   <div 
                     key={product.id}
-                    onClick={() => !isOutOfStock && addToCart({ ...product, price: product.price || stockItem?.unitPrice || 0 })}
+                    onClick={() => !isOutOfStock && addToCart(product)}
                     className={`bg-white rounded-2xl border ${
                       !isOutOfStock 
                         ? 'border-slate-200/80 hover:border-blue-400 hover:shadow-md cursor-pointer' 
@@ -675,7 +669,7 @@ export default function POS() {
                     <div className="absolute top-2.5 right-2.5 z-10">
                       {!isOutOfStock ? (
                         <span className="bg-emerald-500 text-white text-[10px] font-bold px-2 py-0.5 rounded-full shadow-xs">
-                          In Stock
+                          In Stock ({stock})
                         </span>
                       ) : (
                         <span className="bg-red-500 text-white text-[10px] font-bold px-2 py-0.5 rounded-full shadow-xs">
@@ -698,13 +692,13 @@ export default function POS() {
                     {/* Product Name & Pricing */}
                     <div>
                       <p className="text-xs font-bold text-slate-900 truncate leading-snug" title={product.name}>
-                        {product.name || stockItem?.productName}
+                        {product.name}
                       </p>
                       
                       <div className="flex items-center justify-between mt-2">
                         <div className="flex items-center gap-1.5">
                           <span className="text-sm font-bold text-blue-600">
-                            {formatCurrency(pricingMode === 'Wholesale' && product.wholesalePrice > 0 ? product.wholesalePrice : (product.price || stockItem?.unitPrice || 0), currency)}
+                            {formatCurrency(pricingMode === 'Wholesale' && product.wholesalePrice > 0 ? product.wholesalePrice : (product.price || 0), currency)}
                           </span>
                           <span className="text-[10px] font-medium text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded">
                             {pricingMode === 'Wholesale' ? 'Wholesale' : 'Retail'}

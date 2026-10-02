@@ -22,6 +22,7 @@ import RowsDropdown from '@/components/RowsDropdown';
 import ColumnVisibilityDropdown from '@/components/ColumnVisibilityDropdown';
 import { useDebounce } from '@/hooks/useDebounce';
 import { formatCurrency, formatDate, removeLeadingZeros, forceRepaintAfterRender } from '@/lib/utils';
+import PurchaseInvoiceView from '@/components/PurchaseInvoiceView';
 
 
 const PurchaseFormModal = memo(forwardRef(({ currency, onSuccess }, ref) => {
@@ -1086,6 +1087,7 @@ export default function Purchases() {
   
 
   const modalRef = useRef(null);
+  const [isPurchaseFormOpen, setIsPurchaseFormOpen] = useState(false);
   const invoiceRef = useRef(null);
 
   const handlePrintInvoice = useReactToPrint({
@@ -1141,7 +1143,7 @@ export default function Purchases() {
   
   const { selectedIds, isSelected, toggleOne, toggleAll, clearSelection, isAllSelected, selectedCount } = useMultiSelect(visibleData);
 
-  const openNewPurchase = () => modalRef.current?.openNew();
+  const openNewPurchase = () => setIsPurchaseFormOpen(true);
 
       const deleteSelected = () => {
     setConfirmBulkDelete(true);
@@ -1175,6 +1177,21 @@ const deletePurchase = async (purchase) => {
         if (typeof refresh === 'function') refresh();
       } catch (err) { console.error(err); }
     };
+
+  if (isPurchaseFormOpen) {
+    return (
+      <PurchaseInvoiceView
+        currency={currency}
+        onClose={() => setIsPurchaseFormOpen(false)}
+        onSuccess={(type, purchase) => {
+          setIsPurchaseFormOpen(false);
+          refreshPurchases();
+          forceRepaintAfterRender();
+          if (purchase) viewInvoice(purchase);
+        }}
+      />
+    );
+  }
 
   return (
     <div className="space-y-6">
@@ -1372,18 +1389,6 @@ const deletePurchase = async (purchase) => {
         onCancel={() => setConfirmBulkDelete(false)}
         onConfirm={performBulkDelete}
       />
-
-        <PurchaseFormModal 
-          ref={modalRef}
-          currency={currency}
-          onSuccess={(type, purchase) => {
-            
-            
-            refreshPurchases();
-            forceRepaintAfterRender();
-            viewInvoice(purchase);
-          }}
-        />
 
       <BulkDeleteBar
         selectedCount={selectedCount}

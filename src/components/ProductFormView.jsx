@@ -216,12 +216,17 @@ export default function ProductFormView({
     };
 
     if (initialProduct?.id) {
-      await api.updateProduct(initialProduct.id, productData);
       onSuccess('update', { ...productData, barcode: finalBarcode, id: initialProduct.id });
+      api.updateProduct(initialProduct.id, productData).catch(err => {
+        console.error('Error updating product:', err);
+      });
     } else {
-      const createdProduct = await api.createProduct(productData);
-      const id = createdProduct?.id;
-      onSuccess('add', { ...productData, ...createdProduct, id, barcode: finalBarcode });
+      const tempId = Date.now();
+      const tempProduct = { ...productData, id: tempId, barcode: finalBarcode, stockQuantity: 0 };
+      onSuccess('add', tempProduct);
+      api.createProduct(productData).catch(err => {
+        console.error('Error creating product:', err);
+      });
     }
   };
 
