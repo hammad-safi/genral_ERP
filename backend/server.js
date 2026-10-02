@@ -19,7 +19,7 @@ const pool = new Pool({
   min: 4,
   max: 20,
   idleTimeoutMillis: 300000,
-  connectionTimeoutMillis: 10000,
+  connectionTimeoutMillis: 30000,
   keepAlive: true,
   keepAliveInitialDelayMillis: 10000
 });
@@ -213,19 +213,19 @@ async function initDB() {
       CREATE INDEX IF NOT EXISTS "idx_supplier_name" ON "Supplier"("name");
     `);
     console.log("PostgreSQL tables verified.");
-    const { rowCount: roleCount } = await pool.query('SELECT id FROM "Role" WHERE name = \'Admin\'');
+    const { rowCount: roleCount } = await client.query('SELECT id FROM "Role" WHERE name = \'Admin\'');
     if (roleCount === 0) {
-      await pool.query('INSERT INTO "Role" (name, permissions, "isSystem") VALUES (\'Admin\', \'{}\'::jsonb, true)');
+      await client.query('INSERT INTO "Role" (name, permissions, "isSystem") VALUES (\'Admin\', \'{}\'::jsonb, true)');
     }
 
     // Add new columns to existing "User" table
-    try { await pool.query('ALTER TABLE "User" ADD COLUMN "fullName" TEXT'); } catch(e) {}
-    try { await pool.query('ALTER TABLE "User" ADD COLUMN "email" TEXT'); } catch(e) {}
-    try { await pool.query('ALTER TABLE "User" ADD COLUMN "address" TEXT'); } catch(e) {}
-    try { await pool.query('ALTER TABLE "User" ADD COLUMN "profilePicture" TEXT'); } catch(e) {}
-    try { await pool.query('ALTER TABLE "Expense" ADD COLUMN "note" TEXT'); } catch(e) {}
-    try { await pool.query('ALTER TABLE "Supplier" ADD COLUMN IF NOT EXISTS "balance" NUMERIC DEFAULT 0'); } catch(e) {}
-    try { await pool.query('ALTER TABLE "Supplier" ADD COLUMN IF NOT EXISTS "openingBalance" NUMERIC DEFAULT 0'); } catch(e) {}
+    try { await client.query('ALTER TABLE "User" ADD COLUMN "fullName" TEXT'); } catch(e) {}
+    try { await client.query('ALTER TABLE "User" ADD COLUMN "email" TEXT'); } catch(e) {}
+    try { await client.query('ALTER TABLE "User" ADD COLUMN "address" TEXT'); } catch(e) {}
+    try { await client.query('ALTER TABLE "User" ADD COLUMN "profilePicture" TEXT'); } catch(e) {}
+    try { await client.query('ALTER TABLE "Expense" ADD COLUMN "note" TEXT'); } catch(e) {}
+    try { await client.query('ALTER TABLE "Supplier" ADD COLUMN IF NOT EXISTS "balance" NUMERIC DEFAULT 0'); } catch(e) {}
+    try { await client.query('ALTER TABLE "Supplier" ADD COLUMN IF NOT EXISTS "openingBalance" NUMERIC DEFAULT 0'); } catch(e) {}
 
     // Ensure atomic record_purchase_fn exists for single-hop execution
     try {
